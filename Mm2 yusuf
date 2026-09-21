@@ -1,674 +1,717 @@
--- YUSUF.EXE | MM2 Silent Aim + Auto Weapon
--- Şifre: yusuf0417
+--============================================================
+-- GAME SERVER
+-- Murderer / Sheriff / Innocent
+-- Roblox Studio - ServerScriptService
+--============================================================
 
 local Players = game:GetService("Players")
-local RunService = game:GetService("RunService")
-local TweenService = game:GetService("TweenService")
-local UIS = game:GetService("UserInputService")
-local RS = game:GetService("ReplicatedStorage")
-local LP = Players.LocalPlayer
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
 
-local Config = {
-    ESP = false,
-    WeaponESP = false,
-    SilentAim = false,
-    AutoWeapon = false,
-    FOV = 200,
-    Smooth = 0.1,
-    TeamCheck = false,
-    WallCheck = false,
-    ShowFOV = true
+--------------------------------------------------------------
+-- REMOTES
+--------------------------------------------------------------
+
+local Remotes = ReplicatedStorage:FindFirstChild("GameRemotes")
+
+if not Remotes then
+	Remotes = Instance.new("Folder")
+	Remotes.Name = "GameRemotes"
+	Remotes.Parent = ReplicatedStorage
+end
+
+local function remote(name)
+	local r = Remotes:FindFirstChild(name)
+
+	if not r then
+		r = Instance.new("RemoteEvent")
+		r.Name = name
+		r.Parent = Remotes
+	end
+
+	return r
+end
+
+local ShootRemote = remote("Shoot")
+local ThrowKnifeRemote = remote("ThrowKnife")
+local PickupGunRemote = remote("PickupGun")
+
+--------------------------------------------------------------
+-- CONFIG
+--------------------------------------------------------------
+
+local CONFIG = {
+
+	ROUND_TIME = 180,
+
+	INTERMISSION = 15,
+
+	SHERIFF_DAMAGE = 100,
+
+	KNIFE_DAMAGE = 100,
+
+	MAX_SHOOT_DISTANCE = 300,
+
+	MAX_KNIFE_DISTANCE = 120,
+
+	GUN_PICKUP_DISTANCE = 12,
+
+	SHOT_COOLDOWN = 0.65,
+
+	KNIFE_COOLDOWN = 0.8,
 }
 
--- ============================================================
--- ROL TESPİTİ (doğru yöntem: karakterdeki gerçek Tool)
--- ============================================================
-local function getRole(plr)
-    if not plr.Character then return "masum" end
-    local char = plr.Character
-    local tool = char:FindFirstChildOfClass("Tool")
-    if tool then
-        local n = tool.Name:lower()
-        if n:find("knife") or n:find("blade") or n:find("sword") or n:find("dagger") then
-            return "katil"
-        elseif n:find("gun") or n:find("revolver") or n:find("pistol") then
-            return "şerif"
-        end
-    end
-    return "masum"
+--------------------------------------------------------------
+-- RUNTIME DATA
+--------------------------------------------------------------
+
+local lastShot = {}
+local lastKnife = {}
+
+local droppedGun = nil
+
+--------------------------------------------------------------
+-- UTILITIES
+--------------------------------------------------------------
+
+local function getCharacter(player)
+
+	if not player then
+		return nil
+	end
+
+	return player.Character
 end
 
-local function getESPColor(plr)
-    local role = getRole(plr)
-    if role == "katil" then return Color3.fromRGB(255, 50, 50) end
-    if role == "şerif" then return Color3.fromRGB(50, 120, 255) end
-    return Color3.fromRGB(255, 255, 255)
+local function getHumanoid(player)
+
+	local character = getCharacter(player)
+
+	if not character then
+		return nil
+	end
+
+	return character:FindFirstChildOfClass("Humanoid")
 end
 
--- ============================================================
--- ESP
--- ============================================================
-local espCache = {}
+local function getRoot(player)
 
-local function createESP(plr)
-    if plr == LP then return end
-    if espCache[plr] then return end
-    if not plr.Character then return end
+	local character = getCharacter(player)
 
-    local hl = Instance.new("Highlight")
-    hl.Adornee = plr.Character
-    hl.FillColor = getESPColor(plr)
-    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
-    hl.FillTransparency = 0.55
-    hl.OutlineTransparency = 0
-    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-    hl.Parent = plr.Character
+	if not character then
+		return nil
+	end
 
-    local bb = Instance.new("BillboardGui")
-    bb.Size = UDim2.new(0, 120, 0, 32)
-    bb.StudsOffset = Vector3.new(0, 3, 0)
-    bb.AlwaysOnTop = true
-    bb.Adornee = plr.Character
-
-    local nameL = Instance.new("TextLabel")
-    nameL.Size = UDim2.fromScale(1, 0.6)
-    nameL.BackgroundTransparency = 1
-    nameL.Text = plr.Name
-    nameL.TextColor3 = getESPColor(plr)
-    nameL.TextStrokeTransparency = 0
-    nameL.TextSize = 14
-    nameL.Font = Enum.Font.GothamBold
-    nameL.Parent = bb
-
-    local roleL = Instance.new("TextLabel")
-    roleL.Size = UDim2.fromScale(1, 0.4)
-    roleL.Position = UDim2.fromScale(0, 0.6)
-    roleL.BackgroundTransparency = 1
-    roleL.Text = "[" .. string.upper(getRole(plr)) .. "]"
-    roleL.TextColor3 = getESPColor(plr)
-    roleL.TextStrokeTransparency = 0
-    roleL.TextSize = 11
-    roleL.Font = Enum.Font.Gotham
-    roleL.Parent = bb
-
-    bb.Parent = plr.Character
-    espCache[plr] = {hl = hl, bb = bb}
+	return character:FindFirstChild("HumanoidRootPart")
 end
 
-local function removeESP(plr)
-    if espCache[plr] then
-        if espCache[plr].hl then espCache[plr].hl:Destroy() end
-        if espCache[plr].bb then espCache[plr].bb:Destroy() end
-        espCache[plr] = nil
-    end
+local function isAlive(player)
+
+	local humanoid = getHumanoid(player)
+
+	return humanoid
+		and humanoid.Health > 0
 end
 
-local function updateESP()
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if Config.ESP and plr ~= LP and plr.Character then
-            createESP(plr)
-        else
-            removeESP(plr)
-        end
-    end
+local function getRole(player)
+
+	return player:GetAttribute("Role")
 end
 
-Players.PlayerAdded:Connect(function(plr)
-    plr.CharacterAdded:Connect(function()
-        task.wait(1)
-        if Config.ESP then createESP(plr) end
-    end)
-end)
-Players.PlayerRemoving:Connect(function(plr) removeESP(plr) end)
+local function setRole(player, role)
 
--- ============================================================
--- SİLAH ESP
--- ============================================================
-local weaponESPList = {}
-
-local function updateWeaponESP()
-    for _, v in pairs(weaponESPList) do if v.Parent then v:Destroy() end end
-    weaponESPList = {}
-    if not Config.WeaponESP then return end
-    for _, v in pairs(workspace:GetDescendants()) do
-        if v:IsA("Tool") and v:FindFirstChild("Handle") then
-            local box = Instance.new("BoxHandleAdornment")
-            box.Size = v.Handle.Size + Vector3.new(0.3, 0.3, 0.3)
-            box.Adornee = v.Handle
-            box.AlwaysOnTop = true
-            box.ZIndex = 5
-            box.Transparency = 0.4
-            box.Color3 = Color3.fromRGB(255, 200, 50)
-            box.Parent = v.Handle
-            table.insert(weaponESPList, box)
-        end
-    end
+	player:SetAttribute("Role", role)
 end
 
--- ============================================================
--- OTOMATİK SİLAH ALMA
--- ============================================================
-local autoWeaponCooldown = 0
-local pickupRemote = nil
+--------------------------------------------------------------
+-- ROLE MANAGEMENT
+--------------------------------------------------------------
 
--- MM2'de silah alma yöntemi: karakteri silaha yaklaştır
-RunService.Heartbeat:Connect(function()
-    if not Config.AutoWeapon then return end
-    if tick() - autoWeaponCooldown < 0.5 then return end
-    if not LP.Character or not LP.Character:FindFirstChild("HumanoidRootPart") then return end
-    
-    local myPos = LP.Character.HumanoidRootPart.Position
-    
-    for _, v in pairs(workspace:GetDescendants()) do
-        if v:IsA("Tool") and v:FindFirstChild("Handle") then
-            local dist = (v.Handle.Position - myPos).Magnitude
-            if dist < 30 and dist > 3 then
-                -- Kademeli yaklaş (rubber-band yemesin)
-                local target = v.Handle.Position
-                local dir = (target - myPos).Unit
-                local moveTo = myPos + dir * 3
-                LP.Character.HumanoidRootPart.CFrame = CFrame.new(moveTo)
-                autoWeaponCooldown = tick()
-                break
-            end
-        end
-    end
-end)
+local function clearRoles()
 
--- ============================================================
--- SİLENT AİM
--- ============================================================
-local silentAimHeld = false
+	for _, player in ipairs(Players:GetPlayers()) do
 
-local function isVisible(part)
-    if not LP.Character or not LP.Character:FindFirstChild("Head") then return false end
-    local ray = Ray.new(LP.Character.Head.Position, (part.Position - LP.Character.Head.Position).Unit * 500)
-    local hit = workspace:FindPartOnRayWithIgnoreList(ray, {LP.Character})
-    return hit and hit:IsDescendantOf(part.Parent) or false
+		setRole(player, "Innocent")
+	end
 end
 
-local function getClosestTarget()
-    if not LP.Character or not LP.Character:FindFirstChild("Head") then return nil end
-    local myPos = LP.Character.Head.Position
-    local cam = workspace.CurrentCamera
-    local closest, closestScreenDist = nil, Config.FOV
-    
-    for _, plr in ipairs(Players:GetPlayers()) do
-        if plr == LP then continue end
-        if not plr.Character or not plr.Character:FindFirstChild("Head") then continue end
-        if plr:GetAttribute("Alive") == false then continue end
-        
-        local headPos = plr.Character.Head.Position
-        local screenPos, onScreen = cam:WorldToViewportPoint(headPos)
-        if not onScreen then continue end
-        
-        local screenDist = (Vector2.new(screenPos.X, screenPos.Y) - Vector2.new(cam.ViewportSize.X/2, cam.ViewportSize.Y/2)).Magnitude
-        if screenDist < closestScreenDist then
-            if Config.WallCheck and not isVisible(plr.Character.Head) then continue end
-            closest = plr
-            closestScreenDist = screenDist
-        end
-    end
-    return closest
+local function chooseRandomPlayer(list)
+
+	if #list == 0 then
+		return nil
+	end
+
+	return list[math.random(1, #list)]
 end
 
--- GunFired hook
-local gunFired = RS:FindFirstChild("ClientServices")
-if gunFired then gunFired = gunFired:FindFirstChild("WeaponService") end
-if gunFired then gunFired = gunFired:FindFirstChild("GunFired") end
+local function assignRoles()
 
-if gunFired then
-    local mt = getrawmetatable(game)
-    local old = mt.__namecall
-    setreadonly(mt, false)
-    mt.__namecall = newcclosure(function(self, ...)
-        if self == gunFired and getnamecallmethod() == "FireServer" and Config.SilentAim and silentAimHeld then
-            local target = getClosestTarget()
-            if target and target.Character and target.Character:FindFirstChild("Head") then
-                local args = {...}
-                for i, v in pairs(args) do
-                    if typeof(v) == "Vector3" then
-                        args[i] = target.Character.Head.Position
-                    elseif typeof(v) == "CFrame" then
-                        args[i] = CFrame.new(LP.Character.Head.Position, target.Character.Head.Position)
-                    end
-                end
-                return old(self, table.unpack(args))
-            end
-        end
-        return old(self, ...)
-    end)
-    setreadonly(mt, true)
+	local players = Players:GetPlayers()
+
+	if #players < 2 then
+		return
+	end
+
+	clearRoles()
+
+	local murderer = chooseRandomPlayer(players)
+
+	if murderer then
+		setRole(murderer, "Murderer")
+	end
+
+	local sheriffCandidates = {}
+
+	for _, player in ipairs(players) do
+
+		if player ~= murderer then
+
+			table.insert(
+				sheriffCandidates,
+				player
+			)
+		end
+	end
+
+	local sheriff =
+		chooseRandomPlayer(
+			sheriffCandidates
+		)
+
+	if sheriff then
+		setRole(
+			sheriff,
+			"Sheriff"
+		)
+	end
 end
 
--- ============================================================
--- FOV CIRCLE
--- ============================================================
-local fovCircle = Instance.new("Frame")
-fovCircle.BackgroundTransparency = 1
-fovCircle.Size = UDim2.fromOffset(Config.FOV * 2, Config.FOV * 2)
-fovCircle.Position = UDim2.fromScale(0.5, 0.5)
-fovCircle.AnchorPoint = Vector2.new(0.5, 0.5)
-fovCircle.Parent = LP:WaitForChild("PlayerGui")
+--------------------------------------------------------------
+-- TARGET VALIDATION
+--------------------------------------------------------------
 
-local fovStroke = Instance.new("UIStroke")
-fovStroke.Thickness = 2
-fovStroke.Color = Color3.fromRGB(255, 50, 50)
-fovStroke.Transparency = 0.3
-fovStroke.Parent = fovCircle
+local function canTarget(attacker, target)
 
-local fovCorner = Instance.new("UICorner")
-fovCorner.CornerRadius = UDim.new(1, 0)
-fovCorner.Parent = fovCircle
+	if not attacker or not target then
+		return false
+	end
 
--- ============================================================
--- AIM BUTONU
--- ============================================================
-local aimBtn = Instance.new("TextButton")
-aimBtn.Text = "AIM"
-aimBtn.TextSize = 18
-aimBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
-aimBtn.Font = Enum.Font.GothamBold
-aimBtn.Size = UDim2.fromOffset(80, 80)
-aimBtn.Position = UDim2.new(1, -110, 1, -110)
-aimBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
-aimBtn.BackgroundTransparency = 0.15
-aimBtn.Parent = LP:WaitForChild("PlayerGui")
+	if attacker == target then
+		return false
+	end
 
-local aimCorner = Instance.new("UICorner")
-aimCorner.CornerRadius = UDim.new(1, 0)
-aimCorner.Parent = aimBtn
+	if not isAlive(attacker)
+		or not isAlive(target) then
 
-local aimStroke = Instance.new("UIStroke")
-aimStroke.Thickness = 2
-aimStroke.Color = Color3.fromRGB(212, 175, 55)
-aimStroke.Parent = aimBtn
+		return false
+	end
 
-local btnDrag, btnStart, btnPos
-aimBtn.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        btnDrag = true
-        btnStart = input.Position
-        btnPos = aimBtn.Position
-    end
-end)
-UIS.InputChanged:Connect(function(input)
-    if btnDrag and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
-        local delta = input.Position - btnStart
-        aimBtn.Position = UDim2.new(btnPos.X.Scale, btnPos.X.Offset + delta.X, btnPos.Y.Scale, btnPos.Y.Offset + delta.Y)
-    end
-end)
-UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        btnDrag = false
-    end
-end)
+	local attackerRole =
+		getRole(attacker)
 
-aimBtn.MouseButton1Down:Connect(function()
-    silentAimHeld = true
-    aimStroke.Color = Color3.fromRGB(255, 50, 50)
-end)
-aimBtn.MouseButton1Up:Connect(function()
-    silentAimHeld = false
-    aimStroke.Color = Color3.fromRGB(212, 175, 55)
-end)
+	local targetRole =
+		getRole(target)
 
--- ============================================================
--- MENÜ
--- ============================================================
-local C = {
-    bg = Color3.fromRGB(8, 8, 12),
-    panel = Color3.fromRGB(16, 16, 22),
-    card = Color3.fromRGB(22, 22, 30),
-    accent = Color3.fromRGB(212, 175, 55),
-    text = Color3.fromRGB(235, 235, 245),
-    dim = Color3.fromRGB(140, 140, 160),
-    red = Color3.fromRGB(255, 70, 70),
-    blue = Color3.fromRGB(70, 140, 255)
-}
+	----------------------------------------------------------
+	-- Sheriff can attack Murderer
+	----------------------------------------------------------
 
-local gui = Instance.new("ScreenGui")
-gui.Name = "YusufEXE"
-gui.ResetOnSpawn = false
-gui.IgnoreGuiInset = true
-gui.Parent = LP:WaitForChild("PlayerGui")
+	if attackerRole == "Sheriff" then
 
-local function corner(o, p)
-    local c = Instance.new("UICorner")
-    c.CornerRadius = UDim.new(0, p)
-    c.Parent = o
-end
-local function stroke(o, col, t)
-    local s = Instance.new("UIStroke")
-    s.Thickness = 1
-    s.Color = col or C.accent
-    s.Transparency = t or 0.5
-    s.Parent = o
-end
-local function lbl(p, txt, sz, pos, dim, bold)
-    local t = Instance.new("TextLabel")
-    t.BackgroundTransparency = 1
-    t.Text = txt
-    t.TextColor3 = C.text
-    t.TextSize = sz
-    t.Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham
-    t.TextXAlignment = Enum.TextXAlignment.Left
-    t.Position = pos
-    t.Size = dim
-    t.Parent = p
-    return t
+		return targetRole == "Murderer"
+	end
+
+	----------------------------------------------------------
+	-- Murderer can attack Sheriff/Innocent
+	----------------------------------------------------------
+
+	if attackerRole == "Murderer" then
+
+		return
+			targetRole == "Sheriff"
+			or
+			targetRole == "Innocent"
+	end
+
+	return false
 end
 
--- ŞİFRE
-local passGui = Instance.new("Frame")
-passGui.Size = UDim2.fromScale(1, 1)
-passGui.BackgroundColor3 = C.bg
-passGui.Parent = gui
+--------------------------------------------------------------
+-- DISTANCE
+--------------------------------------------------------------
 
-local passBox = Instance.new("Frame")
-passBox.Size = UDim2.fromOffset(280, 180)
-passBox.Position = UDim2.fromScale(0.5, 0.5)
-passBox.AnchorPoint = Vector2.new(0.5, 0.5)
-passBox.BackgroundColor3 = C.panel
-passBox.Parent = passGui
-corner(passBox, 14)
-stroke(passBox, C.accent, 0.3)
+local function distanceBetweenPlayers(a, b)
 
-lbl(passBox, "YUSUF.EXE", 20, UDim2.fromOffset(20, 20), UDim2.new(1, -40, 0, 28), true).TextColor3 = C.accent
-lbl(passBox, "Silent Aim + Auto Weapon", 11, UDim2.fromOffset(20, 48), UDim2.new(1, -40, 0, 20), false).TextColor3 = C.dim
+	local rootA = getRoot(a)
+	local rootB = getRoot(b)
 
-local input = Instance.new("TextBox")
-input.Size = UDim2.new(1, -40, 0, 36)
-input.Position = UDim2.fromOffset(20, 80)
-input.BackgroundColor3 = C.card
-input.TextColor3 = C.text
-input.PlaceholderText = "Şifre..."
-input.PlaceholderColor3 = C.dim
-input.Font = Enum.Font.Gotham
-input.TextSize = 13
-input.Parent = passBox
-corner(input, 8)
-stroke(input, C.accent, 0.8)
+	if not rootA or not rootB then
+		return math.huge
+	end
 
-local submit = Instance.new("TextButton")
-submit.Size = UDim2.new(1, -40, 0, 34)
-submit.Position = UDim2.fromOffset(20, 126)
-submit.BackgroundColor3 = C.accent
-submit.TextColor3 = C.bg
-submit.Text = "GİRİŞ"
-submit.Font = Enum.Font.GothamBold
-submit.TextSize = 13
-submit.Parent = passBox
-corner(submit, 8)
-
-local errorLabel = lbl(passBox, "", 10, UDim2.fromOffset(20, 162), UDim2.new(1, -40, 0, 16), false)
-errorLabel.TextColor3 = C.red
-
-local function checkPass(p)
-    local k = {121, 117, 115, 117, 102, 48, 52, 49, 55}
-    if #p ~= #k then return false end
-    for i = 1, #k do
-        if string.byte(p, i) ~= k[i] then return false end
-    end
-    return true
+	return
+		(rootA.Position - rootB.Position).Magnitude
 end
 
--- ANA PENCERE
-local main = Instance.new("Frame")
-main.Size = UDim2.new(0.9, 0, 0.8, 0)
-main.Position = UDim2.fromScale(0.5, 0.5)
-main.AnchorPoint = Vector2.new(0.5, 0.5)
-main.BackgroundColor3 = C.bg
-main.Parent = gui
-corner(main, 16)
-stroke(main, C.accent, 0.4)
-main.Visible = false
+--------------------------------------------------------------
+-- SHERIFF SHOOTING
+--------------------------------------------------------------
 
-local sizeC = Instance.new("UISizeConstraint")
-sizeC.MinSize = Vector2.new(300, 340)
-sizeC.MaxSize = Vector2.new(680, 500)
-sizeC.Parent = main
+ShootRemote.OnServerEvent:Connect(
+	function(player, target)
 
-local top = Instance.new("Frame")
-top.Size = UDim2.new(1, 0, 0, 44)
-top.BackgroundColor3 = C.panel
-top.BorderSizePixel = 0
-top.Parent = main
-corner(top, 16)
+		if getRole(player) ~= "Sheriff" then
+			return
+		end
 
-lbl(top, "YUSUF.EXE", 17, UDim2.fromOffset(16, 10), UDim2.new(1, -140, 0, 24), true).TextColor3 = C.accent
-local status = lbl(top, "● AKTİF", 10, UDim2.new(1, -120, 0, 16), UDim2.fromOffset(100, 16), false)
-status.TextColor3 = Color3.fromRGB(130, 220, 160)
-status.TextXAlignment = Enum.TextXAlignment.Right
+		if typeof(target) ~= "Instance" then
+			return
+		end
 
--- KAPAT BUTONU (çalışır)
-local kapat = Instance.new("TextButton")
-kapat.Text = "×"
-kapat.TextSize = 22
-kapat.Font = Enum.Font.GothamBold
-kapat.TextColor3 = C.text
-kapat.BackgroundTransparency = 1
-kapat.Size = UDim2.fromOffset(40, 40)
-kapat.Position = UDim2.new(1, -44, 0, 2)
-kapat.Parent = top
-kapat.MouseButton1Click:Connect(function()
-    main.Visible = false
-end)
+		if not target:IsA("Player") then
+			return
+		end
 
-local side = Instance.new("Frame")
-side.Size = UDim2.new(0, 135, 1, -44)
-side.Position = UDim2.fromOffset(0, 44)
-side.BackgroundColor3 = C.panel
-side.BorderSizePixel = 0
-side.Parent = main
+		if not canTarget(player, target) then
+			return
+		end
 
-local content = Instance.new("Frame")
-content.BackgroundTransparency = 1
-content.Position = UDim2.fromOffset(135, 44)
-content.Size = UDim2.new(1, -135, 1, -44)
-content.Parent = main
+		------------------------------------------------------
+		-- RATE LIMIT
+		------------------------------------------------------
 
-local pages, navBtns = {}, {}
+		local now = os.clock()
 
-local function newPage(n)
-    local p = Instance.new("ScrollingFrame")
-    p.BackgroundTransparency = 1
-    p.BorderSizePixel = 0
-    p.Position = UDim2.fromOffset(14, 14)
-    p.Size = UDim2.new(1, -28, 1, -28)
-    p.ScrollBarThickness = 2
-    p.ScrollBarImageColor3 = C.accent
-    p.CanvasSize = UDim2.fromOffset(0, 0)
-    p.AutomaticCanvasSize = Enum.AutomaticSize.Y
-    p.Visible = false
-    p.Parent = content
-    local l = Instance.new("UIListLayout")
-    l.Padding = UDim.new(0, 8)
-    l.Parent = p
-    pages[n] = p
-    return p
+		if lastShot[player]
+			and
+			now - lastShot[player]
+			< CONFIG.SHOT_COOLDOWN then
+
+			return
+		end
+
+		lastShot[player] = now
+
+		------------------------------------------------------
+		-- DISTANCE CHECK
+		------------------------------------------------------
+
+		local distance =
+			distanceBetweenPlayers(
+				player,
+				target
+			)
+
+		if distance >
+			CONFIG.MAX_SHOOT_DISTANCE then
+
+			return
+		end
+
+		------------------------------------------------------
+		-- DAMAGE
+		------------------------------------------------------
+
+		local humanoid =
+			getHumanoid(target)
+
+		if humanoid then
+
+			humanoid:TakeDamage(
+				CONFIG.SHERIFF_DAMAGE
+			)
+		end
+	end
+)
+
+--------------------------------------------------------------
+-- MURDERER KNIFE
+--------------------------------------------------------------
+
+ThrowKnifeRemote.OnServerEvent:Connect(
+	function(player, target)
+
+		if getRole(player)
+			~= "Murderer" then
+
+			return
+		end
+
+		if typeof(target)
+			~= "Instance" then
+
+			return
+		end
+
+		if not target:IsA("Player") then
+			return
+		end
+
+		if not canTarget(
+			player,
+			target
+		) then
+
+			return
+		end
+
+		------------------------------------------------------
+		-- COOLDOWN
+		------------------------------------------------------
+
+		local now =
+			os.clock()
+
+		if lastKnife[player]
+			and
+			now - lastKnife[player]
+			< CONFIG.KNIFE_COOLDOWN then
+
+			return
+		end
+
+		lastKnife[player] = now
+
+		------------------------------------------------------
+		-- DISTANCE
+		------------------------------------------------------
+
+		local distance =
+			distanceBetweenPlayers(
+				player,
+				target
+			)
+
+		if distance >
+			CONFIG.MAX_KNIFE_DISTANCE then
+
+			return
+		end
+
+		------------------------------------------------------
+		-- DAMAGE
+		------------------------------------------------------
+
+		local humanoid =
+			getHumanoid(target)
+
+		if humanoid then
+
+			humanoid:TakeDamage(
+				CONFIG.KNIFE_DAMAGE
+			)
+		end
+	end
+)
+
+--------------------------------------------------------------
+-- DROPPED SHERIFF GUN
+--------------------------------------------------------------
+
+local function removeDroppedGun()
+
+	if droppedGun then
+
+		droppedGun:Destroy()
+
+		droppedGun = nil
+	end
 end
 
-local espPage = newPage("ESP")
-local aimPage = newPage("Aim")
-local cfgPage = newPage("Ayarlar")
+local function createDroppedGun(position)
 
-local function card(p, h, d)
-    local f = Instance.new("Frame")
-    f.Size = UDim2.new(1, -4, 0, 64)
-    f.BackgroundColor3 = C.card
-    f.BorderSizePixel = 0
-    f.Parent = p
-    corner(f, 10)
-    stroke(f, C.accent, 0.8)
-    lbl(f, h, 12, UDim2.fromOffset(12, 10), UDim2.new(1, -70, 0, 20), true)
-    local s = lbl(f, d, 9, UDim2.fromOffset(12, 34), UDim2.new(1, -70, 0, 18), false)
-    s.TextColor3 = C.dim
-    return f
+	removeDroppedGun()
+
+	local gun = Instance.new("Part")
+
+	gun.Name = "DroppedSheriffGun"
+
+	gun.Size =
+		Vector3.new(
+			1.6,
+			0.5,
+			2.2
+		)
+
+	gun.Position =
+		position
+		+
+		Vector3.new(
+			0,
+			1,
+			0
+		)
+
+	gun.Anchored = false
+
+	gun.CanCollide = true
+
+	gun.Material =
+		Enum.Material.Metal
+
+	gun.Parent =
+		workspace
+
+	droppedGun = gun
 end
 
-local function toggle(p, h, d, cb)
-    local f = card(p, h, d)
-    local b = Instance.new("TextButton")
-    b.Text = ""
-    b.AutoButtonColor = false
-    b.Size = UDim2.fromOffset(42, 23)
-    b.Position = UDim2.new(1, -54, 0.5, -11)
-    b.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
-    b.Parent = f
-    corner(b, 20)
-    local dot = Instance.new("Frame")
-    dot.Size = UDim2.fromOffset(17, 17)
-    dot.Position = UDim2.fromOffset(3, 3)
-    dot.BackgroundColor3 = Color3.fromRGB(210, 210, 220)
-    dot.Parent = b
-    corner(dot, 20)
-    local on = false
-    b.MouseButton1Click:Connect(function()
-        on = not on
-        TweenService:Create(b, TweenInfo.new(0.15), {
-            BackgroundColor3 = on and C.accent or Color3.fromRGB(45, 45, 55)
-        }):Play()
-        TweenService:Create(dot, TweenInfo.new(0.15), {
-            Position = on and UDim2.fromOffset(22, 3) or UDim2.fromOffset(3, 3)
-        }):Play()
-        if cb then cb(on) end
-    end)
+--------------------------------------------------------------
+-- PICKUP
+--------------------------------------------------------------
+
+PickupGunRemote.OnServerEvent:Connect(
+	function(player)
+
+		if not droppedGun then
+			return
+		end
+
+		if not isAlive(player) then
+			return
+		end
+
+		------------------------------------------------------
+		-- Murderer cannot pick sheriff gun
+		------------------------------------------------------
+
+		if getRole(player)
+			== "Murderer" then
+
+			return
+		end
+
+		local root =
+			getRoot(player)
+
+		if not root then
+			return
+		end
+
+		local distance =
+			(
+				root.Position
+				-
+				droppedGun.Position
+			).Magnitude
+
+		if distance >
+			CONFIG.GUN_PICKUP_DISTANCE then
+
+			return
+		end
+
+		------------------------------------------------------
+		-- Innocent becomes Sheriff
+		------------------------------------------------------
+
+		setRole(
+			player,
+			"Sheriff"
+		)
+
+		removeDroppedGun()
+	end
+)
+
+--------------------------------------------------------------
+-- DEATH HANDLING
+--------------------------------------------------------------
+
+local function characterAdded(player, character)
+
+	local humanoid =
+		character:WaitForChild(
+			"Humanoid"
+		)
+
+	humanoid.Died:Connect(
+		function()
+
+			local role =
+				getRole(player)
+
+			--------------------------------------------------
+			-- Sheriff died -> drop gun
+			--------------------------------------------------
+
+			if role == "Sheriff" then
+
+				local root =
+					character:FindFirstChild(
+						"HumanoidRootPart"
+					)
+
+				if root then
+
+					createDroppedGun(
+						root.Position
+					)
+				end
+			end
+		end
+	)
 end
 
-local function slider(p, h, min, max, def, cb)
-    local f = card(p, h, "Değer: " .. def)
-    local val = nil
-    for _, v in pairs(f:GetChildren()) do
-        if v:IsA("TextLabel") and v.Text:find("Değer") then val = v end
-    end
-    local track = Instance.new("Frame")
-    track.Size = UDim2.new(1, -24, 0, 6)
-    track.Position = UDim2.new(0, 12, 1, -14)
-    track.BackgroundColor3 = Color3.fromRGB(45, 45, 55)
-    track.Parent = f
-    corner(track, 3)
-    local fill = Instance.new("Frame")
-    fill.Size = UDim2.new((def - min) / (max - min), 0, 1, 0)
-    fill.BackgroundColor3 = C.accent
-    fill.Parent = track
-    corner(fill, 3)
-    local drag = false
-    local function update(i)
-        local pos = math.clamp((i.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
-        fill.Size = UDim2.new(pos, 0, 1, 0)
-        local v = math.floor(min + (max - min) * pos)
-        if val then val.Text = "Değer: " .. v end
-        if cb then cb(v) end
-    end
-    track.InputBegan:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then
-            drag = true; update(i)
-        end
-    end)
-    UIS.InputChanged:Connect(function(i)
-        if drag and (i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseMovement) then update(i) end
-    end)
-    UIS.InputEnded:Connect(function(i)
-        if i.UserInputType == Enum.UserInputType.Touch or i.UserInputType == Enum.UserInputType.MouseButton1 then drag = false end
-    end)
+--------------------------------------------------------------
+-- PLAYER SETUP
+--------------------------------------------------------------
+
+local function playerAdded(player)
+
+	player:SetAttribute(
+		"Role",
+		"Innocent"
+	)
+
+	player.CharacterAdded:Connect(
+		function(character)
+
+			characterAdded(
+				player,
+				character
+			)
+		end
+	)
+
+	if player.Character then
+
+		characterAdded(
+			player,
+			player.Character
+		)
+	end
 end
 
--- ESP
-toggle(espPage, "Oyuncu ESP", "Mavi=Şerif | Kırmızı=Katil | Beyaz=Masum", function(on)
-    Config.ESP = on; updateESP()
-end)
-toggle(espPage, "Silah ESP", "Yerdeki silahları sarı kutuyla göster", function(on)
-    Config.WeaponESP = on; updateWeaponESP()
-end)
+for _, player in ipairs(
+	Players:GetPlayers()
+) do
 
--- AIM
-toggle(aimPage, "Silent Aim", "GunFired hook — AIM basılıyken çalışır", function(on)
-    Config.SilentAim = on
-end)
-toggle(aimPage, "Duvar Kontrolü", "Duvar arkasındakilere kilitlenme", function(on)
-    Config.WallCheck = on
-end)
-slider(aimPage, "FOV", 50, 500, 200, function(v)
-    Config.FOV = v
-    fovCircle.Size = UDim2.fromOffset(v * 2, v * 2)
-end)
-
--- AYARLAR
-toggle(cfgPage, "FOV Göster", "Ekranda FOV dairesi", function(on)
-    Config.ShowFOV = on
-    fovCircle.Visible = on
-end)
-toggle(cfgPage, "Otomatik Silah Al", "Yerdeki silahları otomatik al", function(on)
-    Config.AutoWeapon = on
-end)
-
--- NAV
-local function switch(name)
-    for n, p in pairs(pages) do p.Visible = n == name end
-    for n, b in pairs(navBtns) do
-        b.TextColor3 = n == name and C.accent or C.dim
-        b.BackgroundTransparency = n == name and 0.7 or 1
-    end
+	playerAdded(player)
 end
 
-local function nav(name, y)
-    local b = Instance.new("TextButton")
-    b.Text = name
-    b.TextSize = 12
-    b.Font = Enum.Font.GothamMedium
-    b.TextXAlignment = Enum.TextXAlignment.Left
-    b.TextColor3 = C.dim
-    b.BackgroundColor3 = C.card
-    b.BackgroundTransparency = 1
-    b.Position = UDim2.fromOffset(8, y)
-    b.Size = UDim2.new(1, -16, 0, 38)
-    b.Parent = side
-    corner(b, 8)
-    local pad = Instance.new("UIPadding")
-    pad.PaddingLeft = UDim.new(0, 12)
-    pad.Parent = b
-    navBtns[name] = b
-    b.MouseButton1Click:Connect(function() switch(name) end)
+Players.PlayerAdded:Connect(
+	playerAdded
+)
+
+Players.PlayerRemoving:Connect(
+	function(player)
+
+		lastShot[player] = nil
+		lastKnife[player] = nil
+	end
+)
+
+--------------------------------------------------------------
+-- ROUND CHECKS
+--------------------------------------------------------------
+
+local function murdererAlive()
+
+	for _, player in ipairs(
+		Players:GetPlayers()
+	) do
+
+		if getRole(player)
+			== "Murderer"
+			and
+			isAlive(player) then
+
+			return true
+		end
+	end
+
+	return false
 end
 
-nav("ESP", 12)
-nav("Aim", 56)
-nav("Ayarlar", 100)
+local function innocentTeamAlive()
 
--- Sürükle
-local dragging, dragStart, startPos
-top.InputBegan:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-        dragging = true; dragStart = input.Position; startPos = main.Position
-    end
-end)
-UIS.InputChanged:Connect(function(input)
-    if dragging and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
-        local d = input.Position - dragStart
-        main.Position = UDim2.new(startPos.X.Scale, startPos.X.Offset + d.X, startPos.Y.Scale, startPos.Y.Offset + d.Y)
-    end
-end)
-UIS.InputEnded:Connect(function(input)
-    if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then dragging = false end
-end)
+	for _, player in ipairs(
+		Players:GetPlayers()
+	) do
 
--- GİRİŞ
-local function tryLogin()
-    if checkPass(input.Text) then
-        passGui.Visible = false
-        main.Visible = true
-        switch("ESP")
-        print("[YUSUF.EXE] Giriş başarılı.")
-    else
-        errorLabel.Text = "Hatalı şifre!"
-        input.Text = ""
-    end
+		local role =
+			getRole(player)
+
+		if (
+			role == "Sheriff"
+			or
+			role == "Innocent"
+		)
+			and
+			isAlive(player) then
+
+			return true
+		end
+	end
+
+	return false
 end
 
-submit.MouseButton1Click:Connect(tryLogin)
-input.FocusLost:Connect(function(enter) if enter then tryLogin() end end)
+--------------------------------------------------------------
+-- ROUND LOOP
+--------------------------------------------------------------
 
-switch("ESP")
-fovCircle.Visible = Config.ShowFOV
-print("[YUSUF.EXE] Şifre: yusuf0417")
+task.spawn(
+	function()
+
+		while true do
+
+			--------------------------------------------------
+			-- INTERMISSION
+			--------------------------------------------------
+
+			task.wait(
+				CONFIG.INTERMISSION
+			)
+
+			removeDroppedGun()
+
+			assignRoles()
+
+			local start =
+				os.clock()
+
+			--------------------------------------------------
+			-- ROUND
+			--------------------------------------------------
+
+			while
+				os.clock() - start
+				<
+				CONFIG.ROUND_TIME
+			do
+
+				if not murdererAlive() then
+					break
+				end
+
+				if not innocentTeamAlive() then
+					break
+				end
+
+				task.wait(1)
+			end
+
+			--------------------------------------------------
+			-- RESET
+			--------------------------------------------------
+
+			removeDroppedGun()
+
+			for _, player in ipairs(
+				Players:GetPlayers()
+			) do
+
+				setRole(
+					player,
+					"Innocent"
+				)
+			end
+
+			task.wait(3)
+		end
+	end
+)
+
+print(
+	"[GameServer] Loaded successfully"
+)
