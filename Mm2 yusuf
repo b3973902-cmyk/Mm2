@@ -1,764 +1,263 @@
---============================================================
--- CLIENT CONTROLLER
--- StarterPlayer > StarterPlayerScripts > GameClient.client.lua
---============================================================
+-- StarterPlayer > StarterPlayerScripts > LocalScript
 
 local Players = game:GetService("Players")
+local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
-local ReplicatedStorage = game:GetService("ReplicatedStorage")
-local UserInputService = game:GetService("UserInputService")
 
-local LocalPlayer = Players.LocalPlayer
+local Me = Players.LocalPlayer
 local Camera = workspace.CurrentCamera
 
-local Remotes = ReplicatedStorage:WaitForChild("GameRemotes")
-local ShootRemote = Remotes:WaitForChild("Shoot")
-local ThrowKnifeRemote = Remotes:WaitForChild("ThrowKnife")
-local PickupGunRemote = Remotes:WaitForChild("PickupGun")
+local Remotes = RS:WaitForChild("GameRemotes")
+local Shoot = Remotes:WaitForChild("Shoot")
+local Knife = Remotes:WaitForChild("ThrowKnife")
+local Pickup = Remotes:WaitForChild("PickupGun")
 
---============================================================
--- SETTINGS
---============================================================
+local AIM_LOCK = false
+local ESP = true
+local AUTO_GUN = true
 
-local Settings = {
-	AimLock = false,
-	AimAssist = true,
-	ESP = true,
-	AutoPickup = true,
-
-	AimSmoothness = 0.16,
-	PickupDistance = 11,
-}
-
-local ROLE_COLORS = {
+local COLORS = {
 	Murderer = Color3.fromRGB(255, 45, 45),
-	Sheriff = Color3.fromRGB(50, 130, 255),
+	Sheriff = Color3.fromRGB(40, 130, 255),
 	Innocent = Color3.fromRGB(50, 230, 100)
 }
 
---============================================================
--- PLAYER FUNCTIONS
---============================================================
-
-local function getRole(player)
-	return player:GetAttribute("Role") or "Innocent"
+local function role(p)
+	return p:GetAttribute("Role") or "Innocent"
 end
 
-local function getCharacter(player)
-	return player and player.Character
+local function alive(p)
+	local c = p.Character
+	local h = c and c:FindFirstChildOfClass("Humanoid")
+	return h and h.Health > 0
 end
 
-local function getHumanoid(player)
-	local character = getCharacter(player)
-
-	if not character then
-		return nil
-	end
-
-	return character:FindFirstChildOfClass("Humanoid")
+local function root(p)
+	return p.Character and p.Character:FindFirstChild("HumanoidRootPart")
 end
 
-local function getRoot(player)
-	local character = getCharacter(player)
-
-	if not character then
-		return nil
-	end
-
-	return character:FindFirstChild("HumanoidRootPart")
+local function head(p)
+	return p.Character and p.Character:FindFirstChild("Head")
 end
 
-local function getHead(player)
-	local character = getCharacter(player)
+local function nearest(targetRole)
+	local myRoot = root(Me)
+	if not myRoot then return nil end
 
-	if not character then
-		return nil
-	end
-
-	return character:FindFirstChild("Head")
-end
-
-local function alive(player)
-	local humanoid = getHumanoid(player)
-
-	return humanoid and humanoid.Health > 0
-end
-
---============================================================
--- DISTANCE
---============================================================
-
-local function distanceFromMe(player)
-	local myRoot = getRoot(LocalPlayer)
-	local targetRoot = getRoot(player)
-
-	if not myRoot or not targetRoot then
-		return math.huge
-	end
-
-	return (myRoot.Position - targetRoot.Position).Magnitude
-end
-
---============================================================
--- TARGET SEARCH
---============================================================
-
-local function closestRole(role)
-
-	local bestPlayer = nil
+	local best
 	local bestDistance = math.huge
 
-	for _, player in ipairs(Players:GetPlayers()) do
+	for _, p in ipairs(Players:GetPlayers()) do
+		if p ~= Me and alive(p) and role(p) == targetRole then
+			local r = root(p)
 
-		if player ~= LocalPlayer
-			and alive(player)
-			and getRole(player) == role then
+			if r then
+				local d = (myRoot.Position - r.Position).Magnitude
 
-			local distance = distanceFromMe(player)
-
-			if distance < bestDistance then
-				bestDistance = distance
-				bestPlayer = player
+				if d < bestDistance then
+					bestDistance = d
+					best = p
+				end
 			end
 		end
 	end
 
-	return bestPlayer
+	return best
 end
 
---============================================================
--- ROLE-BASED TARGET PRIORITY
---============================================================
+local function target()
+	local myRole = role(Me)
 
-local function getBestTarget()
-
-	if not alive(LocalPlayer) then
-		return nil
-	end
-
-	local myRole = getRole(LocalPlayer)
-
-	----------------------------------------------------------
-	-- SHERIFF
-	-- Only Murderer
-	----------------------------------------------------------
-
+	-- Şerif -> Katil
 	if myRole == "Sheriff" then
-		return closestRole("Murderer")
+		return nearest("Murderer")
 	end
 
-	----------------------------------------------------------
-	-- MURDERER
-	-- Sheriff first
-	----------------------------------------------------------
-
+	-- Katil -> önce Şerif
 	if myRole == "Murderer" then
-
-		local sheriff = closestRole("Sheriff")
-
-		if sheriff then
-			return sheriff
-		end
-
-		return closestRole("Innocent")
+		return nearest("Sheriff") or nearest("Innocent")
 	end
 
 	return nil
 end
 
---============================================================
--- SIMPLE ESP
---============================================================
+--------------------------------------------------
+-- SADE ESP
+--------------------------------------------------
 
-local Highlights = {}
+local function makeESP(p)
+	if p == Me or not p.Character then return end
 
-local function removeESP(player)
+	local old = p.Character:FindFirstChild("SimpleRoleESP")
+	if old then old:Destroy() end
 
-	local highlight = Highlights[player]
+	if not ESP then return end
 
-	if highlight then
-		highlight:Destroy()
-		Highlights[player] = nil
-	end
+	local h = Instance.new("Highlight")
+	h.Name = "SimpleRoleESP"
+	h.Adornee = p.Character
+
+	local color = COLORS[role(p)] or Color3.new(1,1,1)
+
+	h.FillColor = color
+	h.OutlineColor = color
+
+	h.FillTransparency = 0.9
+	h.OutlineTransparency = 0
+
+	h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+	h.Parent = p.Character
 end
 
-local function updateESP(player)
-
-	if player == LocalPlayer then
-		return
-	end
-
-	removeESP(player)
-
-	if not Settings.ESP then
-		return
-	end
-
-	local character = player.Character
-
-	if not character then
-		return
-	end
-
-	local role = getRole(player)
-	local color = ROLE_COLORS[role]
-
-	if not color then
-		return
-	end
-
-	local highlight = Instance.new("Highlight")
-
-	highlight.Name = "RoleHighlight"
-	highlight.Adornee = character
-
-	-- Sade görünüm
-	highlight.FillTransparency = 0.88
-	highlight.OutlineTransparency = 0
-
-	highlight.FillColor = color
-	highlight.OutlineColor = color
-
-	highlight.DepthMode =
-		Enum.HighlightDepthMode.AlwaysOnTop
-
-	highlight.Parent = character
-
-	Highlights[player] = highlight
-end
-
-local function setupPlayer(player)
-
-	if player == LocalPlayer then
-		return
-	end
-
-	player.CharacterAdded:Connect(function()
-		task.wait(0.5)
-		updateESP(player)
+local function setup(p)
+	p.CharacterAdded:Connect(function()
+		task.wait(.5)
+		makeESP(p)
 	end)
 
-	player:GetAttributeChangedSignal("Role"):Connect(function()
-		updateESP(player)
+	p:GetAttributeChangedSignal("Role"):Connect(function()
+		makeESP(p)
 	end)
 
-	if player.Character then
-		updateESP(player)
+	if p.Character then
+		makeESP(p)
 	end
 end
 
-for _, player in ipairs(Players:GetPlayers()) do
-	setupPlayer(player)
+for _,p in ipairs(Players:GetPlayers()) do
+	setup(p)
 end
 
-Players.PlayerAdded:Connect(setupPlayer)
+Players.PlayerAdded:Connect(setup)
 
-Players.PlayerRemoving:Connect(function(player)
-	removeESP(player)
+--------------------------------------------------
+-- AIM LOCK
+--------------------------------------------------
+
+RunService.RenderStepped:Connect(function()
+
+	if not AIM_LOCK then return end
+
+	local t = target()
+	if not t then return end
+
+	local h = head(t)
+	if not h then return end
+
+	local desired = CFrame.lookAt(
+		Camera.CFrame.Position,
+		h.Position
+	)
+
+	Camera.CFrame = Camera.CFrame:Lerp(desired, 0.18)
 end)
 
---============================================================
--- AIM LOCK
---============================================================
-
-local currentTarget = nil
-
-local function updateAim()
-
-	if not Settings.AimLock then
-		currentTarget = nil
-		return
-	end
-
-	currentTarget = getBestTarget()
-
-	if not currentTarget then
-		return
-	end
-
-	local head = getHead(currentTarget)
-
-	if not head then
-		return
-	end
-
-	local cameraPosition =
-		Camera.CFrame.Position
-
-	local targetCFrame =
-		CFrame.lookAt(
-			cameraPosition,
-			head.Position
-		)
-
-	Camera.CFrame =
-		Camera.CFrame:Lerp(
-			targetCFrame,
-			Settings.AimSmoothness
-		)
-end
-
-RunService.RenderStepped:Connect(updateAim)
-
---============================================================
--- FIRE
---============================================================
+--------------------------------------------------
+-- ATTACK
+--------------------------------------------------
 
 local function attack()
+	local t = target()
+	if not t then return end
 
-	local target = getBestTarget()
+	if role(Me) == "Sheriff" then
+		Shoot:FireServer(t)
 
-	if not target then
-		return
-	end
-
-	local role = getRole(LocalPlayer)
-
-	if role == "Sheriff" then
-
-		ShootRemote:FireServer(target)
-
-	elseif role == "Murderer" then
-
-		ThrowKnifeRemote:FireServer(target)
-
+	elseif role(Me) == "Murderer" then
+		Knife:FireServer(t)
 	end
 end
 
---============================================================
+--------------------------------------------------
 -- AUTO GUN PICKUP
---============================================================
+--------------------------------------------------
 
-local pickupCooldown = false
+local lastPickup = 0
 
-local function checkDroppedGun()
+RunService.Heartbeat:Connect(function()
 
-	if not Settings.AutoPickup then
-		return
+	if not AUTO_GUN then return end
+	if role(Me) == "Murderer" then return end
+
+	local gun = workspace:FindFirstChild("DroppedSheriffGun")
+	local myRoot = root(Me)
+
+	if not gun or not myRoot then return end
+
+	if (myRoot.Position - gun.Position).Magnitude <= 11 then
+
+		if os.clock() - lastPickup >= 1 then
+			lastPickup = os.clock()
+			Pickup:FireServer()
+		end
 	end
+end)
 
-	if pickupCooldown then
-		return
-	end
+--------------------------------------------------
+-- MOBILE GUI
+--------------------------------------------------
 
-	-- Murderer shouldn't get sheriff gun
-	if getRole(LocalPlayer) == "Murderer" then
-		return
-	end
+local gui = Instance.new("ScreenGui")
+gui.Name = "MurderMobileUI"
+gui.ResetOnSpawn = false
+gui.Parent = Me:WaitForChild("PlayerGui")
 
-	local gun =
-		workspace:FindFirstChild("DroppedSheriffGun")
+local menu = Instance.new("Frame")
+menu.Size = UDim2.fromOffset(270,270)
+menu.Position = UDim2.new(.5,-135,.5,-135)
+menu.BackgroundColor3 = Color3.fromRGB(12,12,14)
+menu.Parent = gui
 
-	if not gun then
-		return
-	end
+Instance.new("UICorner",menu).CornerRadius = UDim.new(0,12)
 
-	local root = getRoot(LocalPlayer)
+local stroke = Instance.new("UIStroke",menu)
+stroke.Color = Color3.fromRGB(220,30,30)
+stroke.Thickness = 2
 
-	if not root then
-		return
-	end
+local function button(text,y)
+	local b = Instance.new("TextButton")
 
-	local distance =
-		(root.Position - gun.Position).Magnitude
+	b.Size = UDim2.new(1,-24,0,48)
+	b.Position = UDim2.fromOffset(12,y)
 
-	if distance <= Settings.PickupDistance then
+	b.BackgroundColor3 = Color3.fromRGB(25,25,28)
+	b.TextColor3 = Color3.new(1,1,1)
 
-		pickupCooldown = true
+	b.Font = Enum.Font.GothamBold
+	b.TextSize = 15
+	b.Text = text
 
-		PickupGunRemote:FireServer()
+	b.Parent = menu
 
-		task.delay(1, function()
-			pickupCooldown = false
-		end)
-	end
+	Instance.new("UICorner",b).CornerRadius = UDim.new(0,8)
+
+	return b
 end
 
-RunService.Heartbeat:Connect(checkDroppedGun)
-
---============================================================
--- GUI
---============================================================
-
-local PlayerGui =
-	LocalPlayer:WaitForChild("PlayerGui")
-
-local GUI = Instance.new("ScreenGui")
-
-GUI.Name = "MurderGameUI"
-GUI.ResetOnSpawn = false
-GUI.Parent = PlayerGui
-
---============================================================
--- OPEN BUTTON
---============================================================
-
-local OpenButton = Instance.new("TextButton")
-
-OpenButton.Name = "OpenButton"
-
-OpenButton.Size =
-	UDim2.fromOffset(55, 55)
-
-OpenButton.Position =
-	UDim2.new(0, 15, 0.5, -27)
-
-OpenButton.BackgroundColor3 =
-	Color3.fromRGB(15, 15, 18)
-
-OpenButton.TextColor3 =
-	Color3.fromRGB(255, 60, 60)
-
-OpenButton.Text = "M"
-
-OpenButton.TextSize = 24
-
-OpenButton.Font =
-	Enum.Font.GothamBold
-
-OpenButton.Parent = GUI
-
-local openCorner =
-	Instance.new("UICorner")
-
-openCorner.CornerRadius =
-	UDim.new(0, 12)
-
-openCorner.Parent =
-	OpenButton
-
-local openStroke =
-	Instance.new("UIStroke")
-
-openStroke.Color =
-	Color3.fromRGB(220, 35, 35)
-
-openStroke.Thickness = 2
-
-openStroke.Parent =
-	OpenButton
-
---============================================================
--- MAIN WINDOW
---============================================================
-
-local Main = Instance.new("Frame")
-
-Main.Name = "Main"
-
-Main.Size =
-	UDim2.fromOffset(300, 360)
-
-Main.Position =
-	UDim2.new(0.5, -150, 0.5, -180)
-
-Main.BackgroundColor3 =
-	Color3.fromRGB(13, 13, 16)
-
-Main.BorderSizePixel = 0
-
-Main.Visible = false
-
-Main.Parent = GUI
-
-local mainCorner =
-	Instance.new("UICorner")
-
-mainCorner.CornerRadius =
-	UDim.new(0, 14)
-
-mainCorner.Parent =
-	Main
-
-local mainStroke =
-	Instance.new("UIStroke")
-
-mainStroke.Color =
-	Color3.fromRGB(210, 30, 30)
-
-mainStroke.Thickness = 2
-
-mainStroke.Parent =
-	Main
-
---============================================================
--- RED TOP LINE
---============================================================
-
-local RedLine =
-	Instance.new("Frame")
-
-RedLine.Size =
-	UDim2.new(1, -20, 0, 3)
-
-RedLine.Position =
-	UDim2.fromOffset(10, 48)
-
-RedLine.BackgroundColor3 =
-	Color3.fromRGB(230, 35, 35)
-
-RedLine.BorderSizePixel = 0
-
-RedLine.Parent = Main
-
---============================================================
--- TITLE
---============================================================
-
-local Title =
-	Instance.new("TextLabel")
-
-Title.Size =
-	UDim2.new(1, -20, 0, 40)
-
-Title.Position =
-	UDim2.fromOffset(10, 5)
-
-Title.BackgroundTransparency = 1
-
-Title.Text =
-	"MURDER SYSTEM"
-
-Title.TextColor3 =
-	Color3.fromRGB(245, 245, 245)
-
-Title.TextSize = 19
-
-Title.Font =
-	Enum.Font.GothamBold
-
-Title.TextXAlignment =
-	Enum.TextXAlignment.Left
-
-Title.Parent = Main
-
---============================================================
--- BUTTON CREATOR
---============================================================
-
-local buttonY = 70
-
-local function createToggle(title, initialValue, callback)
-
-	local button =
-		Instance.new("TextButton")
-
-	button.Size =
-		UDim2.new(1, -30, 0, 48)
-
-	button.Position =
-		UDim2.fromOffset(
-			15,
-			buttonY
-		)
-
-	buttonY += 58
-
-	button.BackgroundColor3 =
-		Color3.fromRGB(24, 24, 29)
-
-	button.TextColor3 =
-		Color3.fromRGB(240, 240, 240)
-
-	button.TextSize = 15
-
-	button.Font =
-		Enum.Font.GothamMedium
-
-	button.Parent = Main
-
-	local corner =
-		Instance.new("UICorner")
-
-	corner.CornerRadius =
-		UDim.new(0, 9)
-
-	corner.Parent =
-		button
-
-	local stroke =
-		Instance.new("UIStroke")
-
-	stroke.Color =
-		Color3.fromRGB(65, 65, 70)
-
-	stroke.Thickness = 1
-
-	stroke.Parent =
-		button
-
-	local enabled =
-		initialValue
-
-	local function refresh()
-
-		if enabled then
-
-			button.Text =
-				title .. "   [ON]"
-
-			stroke.Color =
-				Color3.fromRGB(
-					220,
-					35,
-					35
-				)
-
-		else
-
-			button.Text =
-				title .. "   [OFF]"
-
-			stroke.Color =
-				Color3.fromRGB(
-					65,
-					65,
-					70
-				)
-		end
+local aimButton = button("AIM LOCK: OFF",20)
+local espButton = button("ESP: ON",78)
+local gunButton = button("AUTO GUN: ON",136)
+local attackButton = button("ATTACK",194)
+
+aimButton.MouseButton1Click:Connect(function()
+	AIM_LOCK = not AIM_LOCK
+	aimButton.Text = "AIM LOCK: "..(AIM_LOCK and "ON" or "OFF")
+end)
+
+espButton.MouseButton1Click:Connect(function()
+	ESP = not ESP
+	espButton.Text = "ESP: "..(ESP and "ON" or "OFF")
+
+	for _,p in ipairs(Players:GetPlayers()) do
+		makeESP(p)
 	end
+end)
 
-	button.MouseButton1Click:Connect(
-		function()
+gunButton.MouseButton1Click:Connect(function()
+	AUTO_GUN = not AUTO_GUN
+	gunButton.Text = "AUTO GUN: "..(AUTO_GUN and "ON" or "OFF")
+end)
 
-			enabled = not enabled
+attackButton.MouseButton1Click:Connect(attack)
 
-			refresh()
-
-			callback(enabled)
-		end
-	)
-
-	refresh()
-
-	return button
-end
-
---============================================================
--- AIM LOCK BUTTON
---============================================================
-
-createToggle(
-	"Aim Lock",
-	Settings.AimLock,
-
-	function(value)
-		Settings.AimLock = value
-	end
-)
-
---============================================================
--- ESP BUTTON
---============================================================
-
-createToggle(
-	"Role ESP",
-	Settings.ESP,
-
-	function(value)
-
-		Settings.ESP = value
-
-		for _, player in ipairs(
-			Players:GetPlayers()
-		) do
-
-			if player ~= LocalPlayer then
-
-				updateESP(player)
-			end
-		end
-	end
-)
-
---============================================================
--- AUTO PICKUP
---============================================================
-
-createToggle(
-	"Auto Gun Pickup",
-	Settings.AutoPickup,
-
-	function(value)
-		Settings.AutoPickup = value
-	end
-)
-
---============================================================
--- ATTACK BUTTON
---============================================================
-
-local Attack =
-	Instance.new("TextButton")
-
-Attack.Size =
-	UDim2.new(1, -30, 0, 48)
-
-Attack.Position =
-	UDim2.fromOffset(
-		15,
-		buttonY
-	)
-
-Attack.BackgroundColor3 =
-	Color3.fromRGB(160, 25, 25)
-
-Attack.Text =
-	"ATTACK TARGET"
-
-Attack.TextColor3 =
-	Color3.fromRGB(255, 255, 255)
-
-Attack.TextSize = 15
-
-Attack.Font =
-	Enum.Font.GothamBold
-
-Attack.Parent = Main
-
-local attackCorner =
-	Instance.new("UICorner")
-
-attackCorner.CornerRadius =
-	UDim.new(0, 9)
-
-attackCorner.Parent =
-	Attack
-
-Attack.MouseButton1Click:Connect(
-	attack
-)
-
---============================================================
--- OPEN / CLOSE
---============================================================
-
-OpenButton.MouseButton1Click:Connect(
-	function()
-
-		Main.Visible =
-			not Main.Visible
-	end
-)
-
---============================================================
--- PC TEST KEY
---============================================================
-
-UserInputService.InputBegan:Connect(
-	function(input, processed)
-
-		if processed then
-			return
-		end
-
-		if input.KeyCode ==
-			Enum.KeyCode.Q then
-
-			Settings.AimLock =
-				not Settings.AimLock
-		end
-	end
-)
-
-print("[GameClient] Loaded successfully")
+print("Client system loaded.")
