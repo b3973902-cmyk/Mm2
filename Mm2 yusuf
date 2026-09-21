@@ -1,89 +1,54 @@
 --============================================================
--- GAME SERVER
--- Murderer / Sheriff / Innocent
--- Roblox Studio - ServerScriptService
+-- CLIENT CONTROLLER
+-- StarterPlayer > StarterPlayerScripts > GameClient.client.lua
 --============================================================
 
 local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local UserInputService = game:GetService("UserInputService")
 
---------------------------------------------------------------
--- REMOTES
---------------------------------------------------------------
+local LocalPlayer = Players.LocalPlayer
+local Camera = workspace.CurrentCamera
 
-local Remotes = ReplicatedStorage:FindFirstChild("GameRemotes")
+local Remotes = ReplicatedStorage:WaitForChild("GameRemotes")
+local ShootRemote = Remotes:WaitForChild("Shoot")
+local ThrowKnifeRemote = Remotes:WaitForChild("ThrowKnife")
+local PickupGunRemote = Remotes:WaitForChild("PickupGun")
 
-if not Remotes then
-	Remotes = Instance.new("Folder")
-	Remotes.Name = "GameRemotes"
-	Remotes.Parent = ReplicatedStorage
-end
+--============================================================
+-- SETTINGS
+--============================================================
 
-local function remote(name)
-	local r = Remotes:FindFirstChild(name)
+local Settings = {
+	AimLock = false,
+	AimAssist = true,
+	ESP = true,
+	AutoPickup = true,
 
-	if not r then
-		r = Instance.new("RemoteEvent")
-		r.Name = name
-		r.Parent = Remotes
-	end
-
-	return r
-end
-
-local ShootRemote = remote("Shoot")
-local ThrowKnifeRemote = remote("ThrowKnife")
-local PickupGunRemote = remote("PickupGun")
-
---------------------------------------------------------------
--- CONFIG
---------------------------------------------------------------
-
-local CONFIG = {
-
-	ROUND_TIME = 180,
-
-	INTERMISSION = 15,
-
-	SHERIFF_DAMAGE = 100,
-
-	KNIFE_DAMAGE = 100,
-
-	MAX_SHOOT_DISTANCE = 300,
-
-	MAX_KNIFE_DISTANCE = 120,
-
-	GUN_PICKUP_DISTANCE = 12,
-
-	SHOT_COOLDOWN = 0.65,
-
-	KNIFE_COOLDOWN = 0.8,
+	AimSmoothness = 0.16,
+	PickupDistance = 11,
 }
 
---------------------------------------------------------------
--- RUNTIME DATA
---------------------------------------------------------------
+local ROLE_COLORS = {
+	Murderer = Color3.fromRGB(255, 45, 45),
+	Sheriff = Color3.fromRGB(50, 130, 255),
+	Innocent = Color3.fromRGB(50, 230, 100)
+}
 
-local lastShot = {}
-local lastKnife = {}
+--============================================================
+-- PLAYER FUNCTIONS
+--============================================================
 
-local droppedGun = nil
-
---------------------------------------------------------------
--- UTILITIES
---------------------------------------------------------------
+local function getRole(player)
+	return player:GetAttribute("Role") or "Innocent"
+end
 
 local function getCharacter(player)
-
-	if not player then
-		return nil
-	end
-
-	return player.Character
+	return player and player.Character
 end
 
 local function getHumanoid(player)
-
 	local character = getCharacter(player)
 
 	if not character then
@@ -94,7 +59,6 @@ local function getHumanoid(player)
 end
 
 local function getRoot(player)
-
 	local character = getCharacter(player)
 
 	if not character then
@@ -104,614 +68,697 @@ local function getRoot(player)
 	return character:FindFirstChild("HumanoidRootPart")
 end
 
-local function isAlive(player)
+local function getHead(player)
+	local character = getCharacter(player)
 
-	local humanoid = getHumanoid(player)
-
-	return humanoid
-		and humanoid.Health > 0
-end
-
-local function getRole(player)
-
-	return player:GetAttribute("Role")
-end
-
-local function setRole(player, role)
-
-	player:SetAttribute("Role", role)
-end
-
---------------------------------------------------------------
--- ROLE MANAGEMENT
---------------------------------------------------------------
-
-local function clearRoles()
-
-	for _, player in ipairs(Players:GetPlayers()) do
-
-		setRole(player, "Innocent")
-	end
-end
-
-local function chooseRandomPlayer(list)
-
-	if #list == 0 then
+	if not character then
 		return nil
 	end
 
-	return list[math.random(1, #list)]
+	return character:FindFirstChild("Head")
 end
 
-local function assignRoles()
+local function alive(player)
+	local humanoid = getHumanoid(player)
 
-	local players = Players:GetPlayers()
-
-	if #players < 2 then
-		return
-	end
-
-	clearRoles()
-
-	local murderer = chooseRandomPlayer(players)
-
-	if murderer then
-		setRole(murderer, "Murderer")
-	end
-
-	local sheriffCandidates = {}
-
-	for _, player in ipairs(players) do
-
-		if player ~= murderer then
-
-			table.insert(
-				sheriffCandidates,
-				player
-			)
-		end
-	end
-
-	local sheriff =
-		chooseRandomPlayer(
-			sheriffCandidates
-		)
-
-	if sheriff then
-		setRole(
-			sheriff,
-			"Sheriff"
-		)
-	end
+	return humanoid and humanoid.Health > 0
 end
 
---------------------------------------------------------------
--- TARGET VALIDATION
---------------------------------------------------------------
-
-local function canTarget(attacker, target)
-
-	if not attacker or not target then
-		return false
-	end
-
-	if attacker == target then
-		return false
-	end
-
-	if not isAlive(attacker)
-		or not isAlive(target) then
-
-		return false
-	end
-
-	local attackerRole =
-		getRole(attacker)
-
-	local targetRole =
-		getRole(target)
-
-	----------------------------------------------------------
-	-- Sheriff can attack Murderer
-	----------------------------------------------------------
-
-	if attackerRole == "Sheriff" then
-
-		return targetRole == "Murderer"
-	end
-
-	----------------------------------------------------------
-	-- Murderer can attack Sheriff/Innocent
-	----------------------------------------------------------
-
-	if attackerRole == "Murderer" then
-
-		return
-			targetRole == "Sheriff"
-			or
-			targetRole == "Innocent"
-	end
-
-	return false
-end
-
---------------------------------------------------------------
+--============================================================
 -- DISTANCE
---------------------------------------------------------------
+--============================================================
 
-local function distanceBetweenPlayers(a, b)
+local function distanceFromMe(player)
+	local myRoot = getRoot(LocalPlayer)
+	local targetRoot = getRoot(player)
 
-	local rootA = getRoot(a)
-	local rootB = getRoot(b)
-
-	if not rootA or not rootB then
+	if not myRoot or not targetRoot then
 		return math.huge
 	end
 
-	return
-		(rootA.Position - rootB.Position).Magnitude
+	return (myRoot.Position - targetRoot.Position).Magnitude
 end
 
---------------------------------------------------------------
--- SHERIFF SHOOTING
---------------------------------------------------------------
+--============================================================
+-- TARGET SEARCH
+--============================================================
 
-ShootRemote.OnServerEvent:Connect(
-	function(player, target)
+local function closestRole(role)
 
-		if getRole(player) ~= "Sheriff" then
-			return
-		end
+	local bestPlayer = nil
+	local bestDistance = math.huge
 
-		if typeof(target) ~= "Instance" then
-			return
-		end
+	for _, player in ipairs(Players:GetPlayers()) do
 
-		if not target:IsA("Player") then
-			return
-		end
+		if player ~= LocalPlayer
+			and alive(player)
+			and getRole(player) == role then
 
-		if not canTarget(player, target) then
-			return
-		end
+			local distance = distanceFromMe(player)
 
-		------------------------------------------------------
-		-- RATE LIMIT
-		------------------------------------------------------
-
-		local now = os.clock()
-
-		if lastShot[player]
-			and
-			now - lastShot[player]
-			< CONFIG.SHOT_COOLDOWN then
-
-			return
-		end
-
-		lastShot[player] = now
-
-		------------------------------------------------------
-		-- DISTANCE CHECK
-		------------------------------------------------------
-
-		local distance =
-			distanceBetweenPlayers(
-				player,
-				target
-			)
-
-		if distance >
-			CONFIG.MAX_SHOOT_DISTANCE then
-
-			return
-		end
-
-		------------------------------------------------------
-		-- DAMAGE
-		------------------------------------------------------
-
-		local humanoid =
-			getHumanoid(target)
-
-		if humanoid then
-
-			humanoid:TakeDamage(
-				CONFIG.SHERIFF_DAMAGE
-			)
-		end
-	end
-)
-
---------------------------------------------------------------
--- MURDERER KNIFE
---------------------------------------------------------------
-
-ThrowKnifeRemote.OnServerEvent:Connect(
-	function(player, target)
-
-		if getRole(player)
-			~= "Murderer" then
-
-			return
-		end
-
-		if typeof(target)
-			~= "Instance" then
-
-			return
-		end
-
-		if not target:IsA("Player") then
-			return
-		end
-
-		if not canTarget(
-			player,
-			target
-		) then
-
-			return
-		end
-
-		------------------------------------------------------
-		-- COOLDOWN
-		------------------------------------------------------
-
-		local now =
-			os.clock()
-
-		if lastKnife[player]
-			and
-			now - lastKnife[player]
-			< CONFIG.KNIFE_COOLDOWN then
-
-			return
-		end
-
-		lastKnife[player] = now
-
-		------------------------------------------------------
-		-- DISTANCE
-		------------------------------------------------------
-
-		local distance =
-			distanceBetweenPlayers(
-				player,
-				target
-			)
-
-		if distance >
-			CONFIG.MAX_KNIFE_DISTANCE then
-
-			return
-		end
-
-		------------------------------------------------------
-		-- DAMAGE
-		------------------------------------------------------
-
-		local humanoid =
-			getHumanoid(target)
-
-		if humanoid then
-
-			humanoid:TakeDamage(
-				CONFIG.KNIFE_DAMAGE
-			)
-		end
-	end
-)
-
---------------------------------------------------------------
--- DROPPED SHERIFF GUN
---------------------------------------------------------------
-
-local function removeDroppedGun()
-
-	if droppedGun then
-
-		droppedGun:Destroy()
-
-		droppedGun = nil
-	end
-end
-
-local function createDroppedGun(position)
-
-	removeDroppedGun()
-
-	local gun = Instance.new("Part")
-
-	gun.Name = "DroppedSheriffGun"
-
-	gun.Size =
-		Vector3.new(
-			1.6,
-			0.5,
-			2.2
-		)
-
-	gun.Position =
-		position
-		+
-		Vector3.new(
-			0,
-			1,
-			0
-		)
-
-	gun.Anchored = false
-
-	gun.CanCollide = true
-
-	gun.Material =
-		Enum.Material.Metal
-
-	gun.Parent =
-		workspace
-
-	droppedGun = gun
-end
-
---------------------------------------------------------------
--- PICKUP
---------------------------------------------------------------
-
-PickupGunRemote.OnServerEvent:Connect(
-	function(player)
-
-		if not droppedGun then
-			return
-		end
-
-		if not isAlive(player) then
-			return
-		end
-
-		------------------------------------------------------
-		-- Murderer cannot pick sheriff gun
-		------------------------------------------------------
-
-		if getRole(player)
-			== "Murderer" then
-
-			return
-		end
-
-		local root =
-			getRoot(player)
-
-		if not root then
-			return
-		end
-
-		local distance =
-			(
-				root.Position
-				-
-				droppedGun.Position
-			).Magnitude
-
-		if distance >
-			CONFIG.GUN_PICKUP_DISTANCE then
-
-			return
-		end
-
-		------------------------------------------------------
-		-- Innocent becomes Sheriff
-		------------------------------------------------------
-
-		setRole(
-			player,
-			"Sheriff"
-		)
-
-		removeDroppedGun()
-	end
-)
-
---------------------------------------------------------------
--- DEATH HANDLING
---------------------------------------------------------------
-
-local function characterAdded(player, character)
-
-	local humanoid =
-		character:WaitForChild(
-			"Humanoid"
-		)
-
-	humanoid.Died:Connect(
-		function()
-
-			local role =
-				getRole(player)
-
-			--------------------------------------------------
-			-- Sheriff died -> drop gun
-			--------------------------------------------------
-
-			if role == "Sheriff" then
-
-				local root =
-					character:FindFirstChild(
-						"HumanoidRootPart"
-					)
-
-				if root then
-
-					createDroppedGun(
-						root.Position
-					)
-				end
+			if distance < bestDistance then
+				bestDistance = distance
+				bestPlayer = player
 			end
 		end
-	)
+	end
+
+	return bestPlayer
 end
 
---------------------------------------------------------------
--- PLAYER SETUP
---------------------------------------------------------------
+--============================================================
+-- ROLE-BASED TARGET PRIORITY
+--============================================================
 
-local function playerAdded(player)
+local function getBestTarget()
 
-	player:SetAttribute(
-		"Role",
-		"Innocent"
-	)
+	if not alive(LocalPlayer) then
+		return nil
+	end
 
-	player.CharacterAdded:Connect(
-		function(character)
+	local myRole = getRole(LocalPlayer)
 
-			characterAdded(
-				player,
-				character
-			)
+	----------------------------------------------------------
+	-- SHERIFF
+	-- Only Murderer
+	----------------------------------------------------------
+
+	if myRole == "Sheriff" then
+		return closestRole("Murderer")
+	end
+
+	----------------------------------------------------------
+	-- MURDERER
+	-- Sheriff first
+	----------------------------------------------------------
+
+	if myRole == "Murderer" then
+
+		local sheriff = closestRole("Sheriff")
+
+		if sheriff then
+			return sheriff
 		end
-	)
+
+		return closestRole("Innocent")
+	end
+
+	return nil
+end
+
+--============================================================
+-- SIMPLE ESP
+--============================================================
+
+local Highlights = {}
+
+local function removeESP(player)
+
+	local highlight = Highlights[player]
+
+	if highlight then
+		highlight:Destroy()
+		Highlights[player] = nil
+	end
+end
+
+local function updateESP(player)
+
+	if player == LocalPlayer then
+		return
+	end
+
+	removeESP(player)
+
+	if not Settings.ESP then
+		return
+	end
+
+	local character = player.Character
+
+	if not character then
+		return
+	end
+
+	local role = getRole(player)
+	local color = ROLE_COLORS[role]
+
+	if not color then
+		return
+	end
+
+	local highlight = Instance.new("Highlight")
+
+	highlight.Name = "RoleHighlight"
+	highlight.Adornee = character
+
+	-- Sade görünüm
+	highlight.FillTransparency = 0.88
+	highlight.OutlineTransparency = 0
+
+	highlight.FillColor = color
+	highlight.OutlineColor = color
+
+	highlight.DepthMode =
+		Enum.HighlightDepthMode.AlwaysOnTop
+
+	highlight.Parent = character
+
+	Highlights[player] = highlight
+end
+
+local function setupPlayer(player)
+
+	if player == LocalPlayer then
+		return
+	end
+
+	player.CharacterAdded:Connect(function()
+		task.wait(0.5)
+		updateESP(player)
+	end)
+
+	player:GetAttributeChangedSignal("Role"):Connect(function()
+		updateESP(player)
+	end)
 
 	if player.Character then
+		updateESP(player)
+	end
+end
 
-		characterAdded(
-			player,
-			player.Character
+for _, player in ipairs(Players:GetPlayers()) do
+	setupPlayer(player)
+end
+
+Players.PlayerAdded:Connect(setupPlayer)
+
+Players.PlayerRemoving:Connect(function(player)
+	removeESP(player)
+end)
+
+--============================================================
+-- AIM LOCK
+--============================================================
+
+local currentTarget = nil
+
+local function updateAim()
+
+	if not Settings.AimLock then
+		currentTarget = nil
+		return
+	end
+
+	currentTarget = getBestTarget()
+
+	if not currentTarget then
+		return
+	end
+
+	local head = getHead(currentTarget)
+
+	if not head then
+		return
+	end
+
+	local cameraPosition =
+		Camera.CFrame.Position
+
+	local targetCFrame =
+		CFrame.lookAt(
+			cameraPosition,
+			head.Position
 		)
+
+	Camera.CFrame =
+		Camera.CFrame:Lerp(
+			targetCFrame,
+			Settings.AimSmoothness
+		)
+end
+
+RunService.RenderStepped:Connect(updateAim)
+
+--============================================================
+-- FIRE
+--============================================================
+
+local function attack()
+
+	local target = getBestTarget()
+
+	if not target then
+		return
+	end
+
+	local role = getRole(LocalPlayer)
+
+	if role == "Sheriff" then
+
+		ShootRemote:FireServer(target)
+
+	elseif role == "Murderer" then
+
+		ThrowKnifeRemote:FireServer(target)
+
 	end
 end
 
-for _, player in ipairs(
-	Players:GetPlayers()
-) do
+--============================================================
+-- AUTO GUN PICKUP
+--============================================================
 
-	playerAdded(player)
+local pickupCooldown = false
+
+local function checkDroppedGun()
+
+	if not Settings.AutoPickup then
+		return
+	end
+
+	if pickupCooldown then
+		return
+	end
+
+	-- Murderer shouldn't get sheriff gun
+	if getRole(LocalPlayer) == "Murderer" then
+		return
+	end
+
+	local gun =
+		workspace:FindFirstChild("DroppedSheriffGun")
+
+	if not gun then
+		return
+	end
+
+	local root = getRoot(LocalPlayer)
+
+	if not root then
+		return
+	end
+
+	local distance =
+		(root.Position - gun.Position).Magnitude
+
+	if distance <= Settings.PickupDistance then
+
+		pickupCooldown = true
+
+		PickupGunRemote:FireServer()
+
+		task.delay(1, function()
+			pickupCooldown = false
+		end)
+	end
 end
 
-Players.PlayerAdded:Connect(
-	playerAdded
-)
+RunService.Heartbeat:Connect(checkDroppedGun)
 
-Players.PlayerRemoving:Connect(
-	function(player)
+--============================================================
+-- GUI
+--============================================================
 
-		lastShot[player] = nil
-		lastKnife[player] = nil
-	end
-)
+local PlayerGui =
+	LocalPlayer:WaitForChild("PlayerGui")
 
---------------------------------------------------------------
--- ROUND CHECKS
---------------------------------------------------------------
+local GUI = Instance.new("ScreenGui")
 
-local function murdererAlive()
+GUI.Name = "MurderGameUI"
+GUI.ResetOnSpawn = false
+GUI.Parent = PlayerGui
 
-	for _, player in ipairs(
-		Players:GetPlayers()
-	) do
+--============================================================
+-- OPEN BUTTON
+--============================================================
 
-		if getRole(player)
-			== "Murderer"
-			and
-			isAlive(player) then
+local OpenButton = Instance.new("TextButton")
 
-			return true
+OpenButton.Name = "OpenButton"
+
+OpenButton.Size =
+	UDim2.fromOffset(55, 55)
+
+OpenButton.Position =
+	UDim2.new(0, 15, 0.5, -27)
+
+OpenButton.BackgroundColor3 =
+	Color3.fromRGB(15, 15, 18)
+
+OpenButton.TextColor3 =
+	Color3.fromRGB(255, 60, 60)
+
+OpenButton.Text = "M"
+
+OpenButton.TextSize = 24
+
+OpenButton.Font =
+	Enum.Font.GothamBold
+
+OpenButton.Parent = GUI
+
+local openCorner =
+	Instance.new("UICorner")
+
+openCorner.CornerRadius =
+	UDim.new(0, 12)
+
+openCorner.Parent =
+	OpenButton
+
+local openStroke =
+	Instance.new("UIStroke")
+
+openStroke.Color =
+	Color3.fromRGB(220, 35, 35)
+
+openStroke.Thickness = 2
+
+openStroke.Parent =
+	OpenButton
+
+--============================================================
+-- MAIN WINDOW
+--============================================================
+
+local Main = Instance.new("Frame")
+
+Main.Name = "Main"
+
+Main.Size =
+	UDim2.fromOffset(300, 360)
+
+Main.Position =
+	UDim2.new(0.5, -150, 0.5, -180)
+
+Main.BackgroundColor3 =
+	Color3.fromRGB(13, 13, 16)
+
+Main.BorderSizePixel = 0
+
+Main.Visible = false
+
+Main.Parent = GUI
+
+local mainCorner =
+	Instance.new("UICorner")
+
+mainCorner.CornerRadius =
+	UDim.new(0, 14)
+
+mainCorner.Parent =
+	Main
+
+local mainStroke =
+	Instance.new("UIStroke")
+
+mainStroke.Color =
+	Color3.fromRGB(210, 30, 30)
+
+mainStroke.Thickness = 2
+
+mainStroke.Parent =
+	Main
+
+--============================================================
+-- RED TOP LINE
+--============================================================
+
+local RedLine =
+	Instance.new("Frame")
+
+RedLine.Size =
+	UDim2.new(1, -20, 0, 3)
+
+RedLine.Position =
+	UDim2.fromOffset(10, 48)
+
+RedLine.BackgroundColor3 =
+	Color3.fromRGB(230, 35, 35)
+
+RedLine.BorderSizePixel = 0
+
+RedLine.Parent = Main
+
+--============================================================
+-- TITLE
+--============================================================
+
+local Title =
+	Instance.new("TextLabel")
+
+Title.Size =
+	UDim2.new(1, -20, 0, 40)
+
+Title.Position =
+	UDim2.fromOffset(10, 5)
+
+Title.BackgroundTransparency = 1
+
+Title.Text =
+	"MURDER SYSTEM"
+
+Title.TextColor3 =
+	Color3.fromRGB(245, 245, 245)
+
+Title.TextSize = 19
+
+Title.Font =
+	Enum.Font.GothamBold
+
+Title.TextXAlignment =
+	Enum.TextXAlignment.Left
+
+Title.Parent = Main
+
+--============================================================
+-- BUTTON CREATOR
+--============================================================
+
+local buttonY = 70
+
+local function createToggle(title, initialValue, callback)
+
+	local button =
+		Instance.new("TextButton")
+
+	button.Size =
+		UDim2.new(1, -30, 0, 48)
+
+	button.Position =
+		UDim2.fromOffset(
+			15,
+			buttonY
+		)
+
+	buttonY += 58
+
+	button.BackgroundColor3 =
+		Color3.fromRGB(24, 24, 29)
+
+	button.TextColor3 =
+		Color3.fromRGB(240, 240, 240)
+
+	button.TextSize = 15
+
+	button.Font =
+		Enum.Font.GothamMedium
+
+	button.Parent = Main
+
+	local corner =
+		Instance.new("UICorner")
+
+	corner.CornerRadius =
+		UDim.new(0, 9)
+
+	corner.Parent =
+		button
+
+	local stroke =
+		Instance.new("UIStroke")
+
+	stroke.Color =
+		Color3.fromRGB(65, 65, 70)
+
+	stroke.Thickness = 1
+
+	stroke.Parent =
+		button
+
+	local enabled =
+		initialValue
+
+	local function refresh()
+
+		if enabled then
+
+			button.Text =
+				title .. "   [ON]"
+
+			stroke.Color =
+				Color3.fromRGB(
+					220,
+					35,
+					35
+				)
+
+		else
+
+			button.Text =
+				title .. "   [OFF]"
+
+			stroke.Color =
+				Color3.fromRGB(
+					65,
+					65,
+					70
+				)
 		end
 	end
 
-	return false
+	button.MouseButton1Click:Connect(
+		function()
+
+			enabled = not enabled
+
+			refresh()
+
+			callback(enabled)
+		end
+	)
+
+	refresh()
+
+	return button
 end
 
-local function innocentTeamAlive()
+--============================================================
+-- AIM LOCK BUTTON
+--============================================================
 
-	for _, player in ipairs(
-		Players:GetPlayers()
-	) do
+createToggle(
+	"Aim Lock",
+	Settings.AimLock,
 
-		local role =
-			getRole(player)
+	function(value)
+		Settings.AimLock = value
+	end
+)
 
-		if (
-			role == "Sheriff"
-			or
-			role == "Innocent"
-		)
-			and
-			isAlive(player) then
+--============================================================
+-- ESP BUTTON
+--============================================================
 
-			return true
+createToggle(
+	"Role ESP",
+	Settings.ESP,
+
+	function(value)
+
+		Settings.ESP = value
+
+		for _, player in ipairs(
+			Players:GetPlayers()
+		) do
+
+			if player ~= LocalPlayer then
+
+				updateESP(player)
+			end
 		end
 	end
+)
 
-	return false
-end
+--============================================================
+-- AUTO PICKUP
+--============================================================
 
---------------------------------------------------------------
--- ROUND LOOP
---------------------------------------------------------------
+createToggle(
+	"Auto Gun Pickup",
+	Settings.AutoPickup,
 
-task.spawn(
+	function(value)
+		Settings.AutoPickup = value
+	end
+)
+
+--============================================================
+-- ATTACK BUTTON
+--============================================================
+
+local Attack =
+	Instance.new("TextButton")
+
+Attack.Size =
+	UDim2.new(1, -30, 0, 48)
+
+Attack.Position =
+	UDim2.fromOffset(
+		15,
+		buttonY
+	)
+
+Attack.BackgroundColor3 =
+	Color3.fromRGB(160, 25, 25)
+
+Attack.Text =
+	"ATTACK TARGET"
+
+Attack.TextColor3 =
+	Color3.fromRGB(255, 255, 255)
+
+Attack.TextSize = 15
+
+Attack.Font =
+	Enum.Font.GothamBold
+
+Attack.Parent = Main
+
+local attackCorner =
+	Instance.new("UICorner")
+
+attackCorner.CornerRadius =
+	UDim.new(0, 9)
+
+attackCorner.Parent =
+	Attack
+
+Attack.MouseButton1Click:Connect(
+	attack
+)
+
+--============================================================
+-- OPEN / CLOSE
+--============================================================
+
+OpenButton.MouseButton1Click:Connect(
 	function()
 
-		while true do
+		Main.Visible =
+			not Main.Visible
+	end
+)
 
-			--------------------------------------------------
-			-- INTERMISSION
-			--------------------------------------------------
+--============================================================
+-- PC TEST KEY
+--============================================================
 
-			task.wait(
-				CONFIG.INTERMISSION
-			)
+UserInputService.InputBegan:Connect(
+	function(input, processed)
 
-			removeDroppedGun()
+		if processed then
+			return
+		end
 
-			assignRoles()
+		if input.KeyCode ==
+			Enum.KeyCode.Q then
 
-			local start =
-				os.clock()
-
-			--------------------------------------------------
-			-- ROUND
-			--------------------------------------------------
-
-			while
-				os.clock() - start
-				<
-				CONFIG.ROUND_TIME
-			do
-
-				if not murdererAlive() then
-					break
-				end
-
-				if not innocentTeamAlive() then
-					break
-				end
-
-				task.wait(1)
-			end
-
-			--------------------------------------------------
-			-- RESET
-			--------------------------------------------------
-
-			removeDroppedGun()
-
-			for _, player in ipairs(
-				Players:GetPlayers()
-			) do
-
-				setRole(
-					player,
-					"Innocent"
-				)
-			end
-
-			task.wait(3)
+			Settings.AimLock =
+				not Settings.AimLock
 		end
 	end
 )
 
-print(
-	"[GameServer] Loaded successfully"
-)
+print("[GameClient] Loaded successfully")
