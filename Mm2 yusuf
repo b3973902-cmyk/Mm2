@@ -1,263 +1,348 @@
--- StarterPlayer > StarterPlayerScripts > LocalScript
+-- YUSUF.EXE | ESP + Aim Lock + Auto Weapon
+-- Menü yok. Sadece ekran butonları.
 
 local Players = game:GetService("Players")
-local RS = game:GetService("ReplicatedStorage")
 local RunService = game:GetService("RunService")
+local UIS = game:GetService("UserInputService")
+local RS = game:GetService("ReplicatedStorage")
+local LP = Players.LocalPlayer
 
-local Me = Players.LocalPlayer
-local Camera = workspace.CurrentCamera
-
-local Remotes = RS:WaitForChild("GameRemotes")
-local Shoot = Remotes:WaitForChild("Shoot")
-local Knife = Remotes:WaitForChild("ThrowKnife")
-local Pickup = Remotes:WaitForChild("PickupGun")
-
-local AIM_LOCK = false
-local ESP = true
-local AUTO_GUN = true
-
-local COLORS = {
-	Murderer = Color3.fromRGB(255, 45, 45),
-	Sheriff = Color3.fromRGB(40, 130, 255),
-	Innocent = Color3.fromRGB(50, 230, 100)
-}
-
-local function role(p)
-	return p:GetAttribute("Role") or "Innocent"
+-- ============================================================
+-- ROL TESPİTİ
+-- ============================================================
+local function getRole(plr)
+    if not plr.Character then return "masum" end
+    local char = plr.Character
+    local tool = char:FindFirstChildOfClass("Tool")
+    
+    if tool then
+        local n = tool.Name:lower()
+        if n:find("knife") or n:find("blade") or n:find("sword") or n:find("dagger") or n:find("katana") then
+            return "katil"
+        elseif n:find("gun") or n:find("revolver") or n:find("pistol") or n:find("sheriff") then
+            -- Şerif mi kahraman mı? İkisi de silah taşır.
+            -- Kahraman = masum + silah. Şerif = başlangıçtan silahlı.
+            -- Şimdilik ikisini de "şerif" say, sonra düzeltiriz.
+            return "şerif"
+        end
+    end
+    return "masum"
 end
 
-local function alive(p)
-	local c = p.Character
-	local h = c and c:FindFirstChildOfClass("Humanoid")
-	return h and h.Health > 0
+local function getESPColor(role)
+    if role == "katil" then return Color3.fromRGB(255, 50, 50) end
+    if role == "şerif" then return Color3.fromRGB(50, 120, 255) end
+    if role == "kahraman" then return Color3.fromRGB(255, 215, 0) end
+    return Color3.fromRGB(50, 255, 50) -- masum yeşil
 end
 
-local function root(p)
-	return p.Character and p.Character:FindFirstChild("HumanoidRootPart")
+-- ============================================================
+-- ESP (her zaman açık)
+-- ============================================================
+local espCache = {}
+
+local function createESP(plr)
+    if plr == LP then return end
+    if espCache[plr] then return end
+    if not plr.Character then return end
+
+    local role = getRole(plr)
+    local color = getESPColor(role)
+
+    local hl = Instance.new("Highlight")
+    hl.Adornee = plr.Character
+    hl.FillColor = color
+    hl.OutlineColor = Color3.fromRGB(255, 255, 255)
+    hl.FillTransparency = 0.5
+    hl.OutlineTransparency = 0
+    hl.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    hl.Parent = plr.Character
+
+    local bb = Instance.new("BillboardGui")
+    bb.Size = UDim2.new(0, 140, 0, 38)
+    bb.StudsOffset = Vector3.new(0, 3.5, 0)
+    bb.AlwaysOnTop = true
+    bb.Adornee = plr.Character
+
+    local nameL = Instance.new("TextLabel")
+    nameL.Size = UDim2.fromScale(1, 0.6)
+    nameL.BackgroundTransparency = 1
+    nameL.Text = plr.Name
+    nameL.TextColor3 = color
+    nameL.TextStrokeTransparency = 0
+    nameL.TextSize = 14
+    nameL.Font = Enum.Font.GothamBold
+    nameL.Parent = bb
+
+    local roleL = Instance.new("TextLabel")
+    roleL.Size = UDim2.fromScale(1, 0.4)
+    roleL.Position = UDim2.fromScale(0, 0.6)
+    roleL.BackgroundTransparency = 1
+    roleL.Text = "[" .. string.upper(role) .. "]"
+    roleL.TextColor3 = color
+    roleL.TextStrokeTransparency = 0
+    roleL.TextSize = 11
+    roleL.Font = Enum.Font.Gotham
+    roleL.Parent = bb
+
+    bb.Parent = plr.Character
+    espCache[plr] = {hl = hl, bb = bb}
 end
 
-local function head(p)
-	return p.Character and p.Character:FindFirstChild("Head")
+local function removeESP(plr)
+    if espCache[plr] then
+        if espCache[plr].hl then espCache[plr].hl:Destroy() end
+        if espCache[plr].bb then espCache[plr].bb:Destroy() end
+        espCache[plr] = nil
+    end
 end
 
-local function nearest(targetRole)
-	local myRoot = root(Me)
-	if not myRoot then return nil end
-
-	local best
-	local bestDistance = math.huge
-
-	for _, p in ipairs(Players:GetPlayers()) do
-		if p ~= Me and alive(p) and role(p) == targetRole then
-			local r = root(p)
-
-			if r then
-				local d = (myRoot.Position - r.Position).Magnitude
-
-				if d < bestDistance then
-					bestDistance = d
-					best = p
-				end
-			end
-		end
-	end
-
-	return best
+local function updateAllESP()
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr ~= LP and plr.Character then
+            createESP(plr)
+        else
+            removeESP(plr)
+        end
+    end
 end
 
-local function target()
-	local myRole = role(Me)
-
-	-- Şerif -> Katil
-	if myRole == "Sheriff" then
-		return nearest("Murderer")
-	end
-
-	-- Katil -> önce Şerif
-	if myRole == "Murderer" then
-		return nearest("Sheriff") or nearest("Innocent")
-	end
-
-	return nil
-end
-
---------------------------------------------------
--- SADE ESP
---------------------------------------------------
-
-local function makeESP(p)
-	if p == Me or not p.Character then return end
-
-	local old = p.Character:FindFirstChild("SimpleRoleESP")
-	if old then old:Destroy() end
-
-	if not ESP then return end
-
-	local h = Instance.new("Highlight")
-	h.Name = "SimpleRoleESP"
-	h.Adornee = p.Character
-
-	local color = COLORS[role(p)] or Color3.new(1,1,1)
-
-	h.FillColor = color
-	h.OutlineColor = color
-
-	h.FillTransparency = 0.9
-	h.OutlineTransparency = 0
-
-	h.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
-	h.Parent = p.Character
-end
-
-local function setup(p)
-	p.CharacterAdded:Connect(function()
-		task.wait(.5)
-		makeESP(p)
-	end)
-
-	p:GetAttributeChangedSignal("Role"):Connect(function()
-		makeESP(p)
-	end)
-
-	if p.Character then
-		makeESP(p)
-	end
-end
-
-for _,p in ipairs(Players:GetPlayers()) do
-	setup(p)
-end
-
-Players.PlayerAdded:Connect(setup)
-
---------------------------------------------------
--- AIM LOCK
---------------------------------------------------
-
-RunService.RenderStepped:Connect(function()
-
-	if not AIM_LOCK then return end
-
-	local t = target()
-	if not t then return end
-
-	local h = head(t)
-	if not h then return end
-
-	local desired = CFrame.lookAt(
-		Camera.CFrame.Position,
-		h.Position
-	)
-
-	Camera.CFrame = Camera.CFrame:Lerp(desired, 0.18)
+-- Rol değişince ESP rengini güncelle
+RunService.Heartbeat:Connect(function()
+    for plr, data in pairs(espCache) do
+        if plr.Character and data.hl then
+            local color = getESPColor(getRole(plr))
+            data.hl.FillColor = color
+            if data.bb then
+                for _, v in pairs(data.bb:GetChildren()) do
+                    if v:IsA("TextLabel") then v.TextColor3 = color end
+                end
+            end
+        end
+    end
 end)
 
---------------------------------------------------
--- ATTACK
---------------------------------------------------
+Players.PlayerAdded:Connect(function(plr)
+    plr.CharacterAdded:Connect(function()
+        task.wait(1)
+        createESP(plr)
+    end)
+end)
+Players.PlayerRemoving:Connect(function(plr) removeESP(plr) end)
 
-local function attack()
-	local t = target()
-	if not t then return end
-
-	if role(Me) == "Sheriff" then
-		Shoot:FireServer(t)
-
-	elseif role(Me) == "Murderer" then
-		Knife:FireServer(t)
-	end
+-- ============================================================
+-- HEDEF SEÇİMİ (Aim Lock)
+-- ============================================================
+local function getMyRole()
+    return getRole(LP)
 end
 
---------------------------------------------------
--- AUTO GUN PICKUP
---------------------------------------------------
+local function findTarget()
+    local myRole = getMyRole()
+    local targetRole = nil
+    
+    if myRole == "şerif" then
+        targetRole = "katil"
+    elseif myRole == "katil" then
+        targetRole = "şerif" -- şerif ölünce silahı alan kişi (kahraman) hedef olur
+    else
+        return nil -- masum kilitlenmez
+    end
+    
+    local myPos = LP.Character and LP.Character:FindFirstChild("Head") and LP.Character.Head.Position
+    if not myPos then return nil end
+    
+    local closest, closestDist = nil, 500
+    for _, plr in ipairs(Players:GetPlayers()) do
+        if plr == LP then continue end
+        if not plr.Character or not plr.Character:FindFirstChild("Head") then continue end
+        if plr:GetAttribute("Alive") == false then continue end
+        
+        local role = getRole(plr)
+        if role == targetRole or (myRole == "katil" and role == "kahraman") then
+            local dist = (plr.Character.Head.Position - myPos).Magnitude
+            if dist < closestDist then
+                closest = plr
+                closestDist = dist
+            end
+        end
+    end
+    return closest
+end
 
-local lastPickup = 0
+-- ============================================================
+-- SİLENT AİM (GunFired hook)
+-- ============================================================
+local aimLockActive = false
+
+local gunFired = RS:FindFirstChild("ClientServices")
+if gunFired then gunFired = gunFired:FindFirstChild("WeaponService") end
+if gunFired then gunFired = gunFired:FindFirstChild("GunFired") end
+
+if gunFired then
+    local mt = getrawmetatable(game)
+    local old = mt.__namecall
+    setreadonly(mt, false)
+    mt.__namecall = newcclosure(function(self, ...)
+        if self == gunFired and getnamecallmethod() == "FireServer" and aimLockActive then
+            local target = findTarget()
+            if target and target.Character and target.Character:FindFirstChild("Head") then
+                local args = {...}
+                for i, v in pairs(args) do
+                    if typeof(v) == "Vector3" then
+                        args[i] = target.Character.Head.Position
+                    elseif typeof(v) == "CFrame" then
+                        args[i] = CFrame.new(LP.Character.Head.Position, target.Character.Head.Position)
+                    end
+                end
+                return old(self, table.unpack(args))
+            end
+        end
+        return old(self, ...)
+    end)
+    setreadonly(mt, true)
+end
+
+-- ============================================================
+-- OTOMATİK SİLAH ALMA (teleport)
+-- ============================================================
+local autoWeapon = false
+local teleporting = false
+
+local function findDroppedWeapon()
+    if not LP.Character or not LP.Character:FindFirstChild("HumanoidRootPart") then return nil end
+    local myPos = LP.Character.HumanoidRootPart.Position
+    
+    for _, v in pairs(workspace:GetDescendants()) do
+        local n = v.Name:lower()
+        if (n:find("gun") or n:find("knife") or n:find("revolver") or n:find("pistol") or n:find("sword")) 
+           and v:IsA("BasePart") and not v:IsDescendantOf(LP.Character) then
+            local dist = (v.Position - myPos).Magnitude
+            if dist < 300 then
+                return v
+            end
+        end
+    end
+    return nil
+end
 
 RunService.Heartbeat:Connect(function()
-
-	if not AUTO_GUN then return end
-	if role(Me) == "Murderer" then return end
-
-	local gun = workspace:FindFirstChild("DroppedSheriffGun")
-	local myRoot = root(Me)
-
-	if not gun or not myRoot then return end
-
-	if (myRoot.Position - gun.Position).Magnitude <= 11 then
-
-		if os.clock() - lastPickup >= 1 then
-			lastPickup = os.clock()
-			Pickup:FireServer()
-		end
-	end
+    if not autoWeapon or teleporting then return end
+    if not LP.Character or not LP.Character:FindFirstChild("HumanoidRootPart") then return end
+    
+    local weapon = findDroppedWeapon()
+    if weapon then
+        teleporting = true
+        local root = LP.Character.HumanoidRootPart
+        local originalCF = root.CFrame
+        local weaponPos = weapon.Position
+        
+        -- Silaha ışınlan
+        root.CFrame = CFrame.new(weaponPos + Vector3.new(0, 3, 0))
+        task.wait(0.15)
+        
+        -- Geri dön
+        root.CFrame = originalCF
+        task.wait(0.1)
+        
+        teleporting = false
+    end
 end)
 
---------------------------------------------------
--- MOBILE GUI
---------------------------------------------------
-
+-- ============================================================
+-- EKRAN BUTONLARI
+-- ============================================================
 local gui = Instance.new("ScreenGui")
-gui.Name = "MurderMobileUI"
+gui.Name = "YusufEXE"
 gui.ResetOnSpawn = false
-gui.Parent = Me:WaitForChild("PlayerGui")
+gui.IgnoreGuiInset = true
+gui.Parent = LP:WaitForChild("PlayerGui")
 
-local menu = Instance.new("Frame")
-menu.Size = UDim2.fromOffset(270,270)
-menu.Position = UDim2.new(.5,-135,.5,-135)
-menu.BackgroundColor3 = Color3.fromRGB(12,12,14)
-menu.Parent = gui
+-- AIM LOCK butonu
+local aimBtn = Instance.new("TextButton")
+aimBtn.Text = "AIM"
+aimBtn.TextSize = 18
+aimBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+aimBtn.Font = Enum.Font.GothamBold
+aimBtn.Size = UDim2.fromOffset(85, 85)
+aimBtn.Position = UDim2.new(1, -110, 1, -220)
+aimBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+aimBtn.BackgroundTransparency = 0.15
+aimBtn.Parent = gui
 
-Instance.new("UICorner",menu).CornerRadius = UDim.new(0,12)
+local aimCorner = Instance.new("UICorner")
+aimCorner.CornerRadius = UDim.new(1, 0)
+aimCorner.Parent = aimBtn
 
-local stroke = Instance.new("UIStroke",menu)
-stroke.Color = Color3.fromRGB(220,30,30)
-stroke.Thickness = 2
+local aimStroke = Instance.new("UIStroke")
+aimStroke.Thickness = 3
+aimStroke.Color = Color3.fromRGB(212, 175, 55)
+aimStroke.Parent = aimBtn
 
-local function button(text,y)
-	local b = Instance.new("TextButton")
+-- OTO SİLAH butonu
+local autoBtn = Instance.new("TextButton")
+autoBtn.Text = "OTO"
+autoBtn.TextSize = 16
+autoBtn.TextColor3 = Color3.fromRGB(255, 255, 255)
+autoBtn.Font = Enum.Font.GothamBold
+autoBtn.Size = UDim2.fromOffset(85, 85)
+autoBtn.Position = UDim2.new(1, -110, 1, -110)
+autoBtn.BackgroundColor3 = Color3.fromRGB(30, 30, 40)
+autoBtn.BackgroundTransparency = 0.15
+autoBtn.Parent = gui
 
-	b.Size = UDim2.new(1,-24,0,48)
-	b.Position = UDim2.fromOffset(12,y)
+local autoCorner = Instance.new("UICorner")
+autoCorner.CornerRadius = UDim.new(1, 0)
+autoCorner.Parent = autoBtn
 
-	b.BackgroundColor3 = Color3.fromRGB(25,25,28)
-	b.TextColor3 = Color3.new(1,1,1)
+local autoStroke = Instance.new("UIStroke")
+autoStroke.Thickness = 3
+autoStroke.Color = Color3.fromRGB(80, 80, 80)
+autoStroke.Parent = autoBtn
 
-	b.Font = Enum.Font.GothamBold
-	b.TextSize = 15
-	b.Text = text
-
-	b.Parent = menu
-
-	Instance.new("UICorner",b).CornerRadius = UDim.new(0,8)
-
-	return b
+-- Sürükleme (her iki buton)
+local function makeDraggable(btn)
+    local drag, start, pos
+    btn.InputBegan:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            drag = true; start = input.Position; pos = btn.Position
+        end
+    end)
+    UIS.InputChanged:Connect(function(input)
+        if drag and (input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseMovement) then
+            local d = input.Position - start
+            btn.Position = UDim2.new(pos.X.Scale, pos.X.Offset + d.X, pos.Y.Scale, pos.Y.Offset + d.Y)
+        end
+    end)
+    UIS.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+            drag = false
+        end
+    end)
 end
 
-local aimButton = button("AIM LOCK: OFF",20)
-local espButton = button("ESP: ON",78)
-local gunButton = button("AUTO GUN: ON",136)
-local attackButton = button("ATTACK",194)
+makeDraggable(aimBtn)
+makeDraggable(autoBtn)
 
-aimButton.MouseButton1Click:Connect(function()
-	AIM_LOCK = not AIM_LOCK
-	aimButton.Text = "AIM LOCK: "..(AIM_LOCK and "ON" or "OFF")
+-- AIM basılı tut
+aimBtn.MouseButton1Down:Connect(function()
+    aimLockActive = true
+    aimStroke.Color = Color3.fromRGB(255, 50, 50)
+end)
+aimBtn.MouseButton1Up:Connect(function()
+    aimLockActive = false
+    aimStroke.Color = Color3.fromRGB(212, 175, 55)
 end)
 
-espButton.MouseButton1Click:Connect(function()
-	ESP = not ESP
-	espButton.Text = "ESP: "..(ESP and "ON" or "OFF")
-
-	for _,p in ipairs(Players:GetPlayers()) do
-		makeESP(p)
-	end
+-- OTO aç/kapa
+autoBtn.MouseButton1Click:Connect(function()
+    autoWeapon = not autoWeapon
+    autoStroke.Color = autoWeapon and Color3.fromRGB(50, 255, 50) or Color3.fromRGB(80, 80, 80)
 end)
 
-gunButton.MouseButton1Click:Connect(function()
-	AUTO_GUN = not AUTO_GUN
-	gunButton.Text = "AUTO GUN: "..(AUTO_GUN and "ON" or "OFF")
-end)
-
-attackButton.MouseButton1Click:Connect(attack)
-
-print("Client system loaded.")
+-- ============================================================
+-- BAŞLAT
+-- ============================================================
+updateAllESP()
+print("[YUSUF.EXE] Yüklendi. ESP açık, AIM ve OTO butonları ekranda.")
+print("[YUSUF.EXE] Kırmızı=Katil, Mavi=Şerif, Yeşil=Masum, Sarı=Kahraman")
